@@ -1,0 +1,232 @@
+name: K3s Cluster Install
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'K3s cluster name'
+        required: true
+        type: string
+      k3s_version:
+        description: 'K3s version to install'
+        required: false
+        type: string
+        default: 'latest'
+      master_instances:
+        description: 'Comma-separated list of master instance IDs'
+        required: true
+        type: string
+      worker_instances:
+        description: 'Comma-separated list of worker instance IDs'
+        required: true
+        type: string
+      k3s_api_dns:
+        description: 'K3s API load balancer DNS name'
+        required: true
+        type: string
+      aws_region:
+        description: 'AWS region'
+        required: true
+        type: string
+    secrets:
+      AWS_ROLE_ARN:
+        description: 'AWS IAM role ARN for OIDC'
+        required: true
+
+env:
+  AWS_REGION: ${{ inputs.aws_region }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  install-k3s-masters:
+    runs-on: ubuntu-latest
+    outputs:
+      k3s_token: ${{ steps.get-token.outputs.token }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: GitHubActions-K3s-Masters
+
+    - name: Install K3s on first master
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Installing K3s on first master: $FIRST_MASTER"
+        
+        INSTALL_COMMAND=$(cat << 'EOF'
+        curl -sfL https://get.k3s.io | sh -s - server \
+          --cluster-init \
+          --tls-san=${{ inputs.k3s_api_dns }} \
+          --disable=traefik \
+          --disable=servicelb \
+          --write-kubeconfig-mode=644
+        EOF
+        )
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters "commands=[\"$INSTALL_COMMAND\"]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Waiting for K3s installation to complete..."
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        # Check installation result
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
+
+    - name: Get K3s token from first master
+      id: get-token
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Getting K3s token from first master..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=["sudo cat /var/lib/rancher/k3s/server/node-token"]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        TOKEN=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text | tr -d '\n')
+        
+        echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+    - name: Join additional masters
+      if: ${{ contains(inputs.master_instances, ',') }}
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        ADDITIONAL_MASTERS=$(echo $MASTER_INSTANCES | cut -d',' -f2-)
+        
+        if [ "$ADDITIONAL_MASTERS" != "$FIRST_MASTER" ]; then
+          echo "Joining additional masters to cluster..."
+          
+          for MASTER in $(echo $ADDITIONAL_MASTERS | tr ',' ' '); do
+            echo "Joining master: $MASTER"
+            
+            JOIN_COMMAND=$(cat << EOF
+        curl -sfL https://get.k3s.io | sh -s - server \\
+          --server https://${{ inputs.k3s_api_dns }}:6443 \\
+          --token ${{ steps.get-token.outputs.token }} \\
+          --tls-san=${{ inputs.k3s_api_dns }} \\
+          --disable=traefik \\
+          --disable=servicelb \\
+          --write-kubeconfig-mode=644
+        EOF
+            )
+            
+            COMMAND_ID=$(aws ssm send-command \
+              --instance-ids "$MASTER" \
+              --document-name "AWS-RunShellScript" \
+              --parameters "commands=[\"$JOIN_COMMAND\"]" \
+              --query 'Command.CommandId' \
+              --output text)
+            
+            aws ssm wait command-executed \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$MASTER"
+          done
+        fi
+
+  install-k3s-workers:
+    runs-on: ubuntu-latest
+    needs: install-k3s-masters
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: GitHubActions-K3s-Workers
+
+    - name: Join workers to cluster
+      run: |
+        WORKER_INSTANCES="${{ inputs.worker_instances }}"
+        
+        echo "Joining workers to K3s cluster..."
+        
+        for WORKER in $(echo $WORKER_INSTANCES | tr ',' ' '); do
+          echo "Joining worker: $WORKER"
+          
+          JOIN_COMMAND=$(cat << EOF
+        curl -sfL https://get.k3s.io | sh -s - agent \\
+          --server https://${{ inputs.k3s_api_dns }}:6443 \\
+          --token ${{ needs.install-k3s-masters.outputs.k3s_token }}
+        EOF
+          )
+          
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$WORKER" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"$JOIN_COMMAND\"]" \
+            --query 'Command.CommandId' \
+            --output text)
+          
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$WORKER"
+        done
+
+  verify-cluster:
+    runs-on: ubuntu-latest
+    needs: [install-k3s-masters, install-k3s-workers]
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: GitHubActions-K3s-Verify
+
+    - name: Verify cluster status
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying K3s cluster status..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=["sudo kubectl get nodes -o wide"]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        echo "Cluster nodes:"
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
