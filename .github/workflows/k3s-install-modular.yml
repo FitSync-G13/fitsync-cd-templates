@@ -164,7 +164,6 @@ jobs:
 
   install-k3s-workers:
     if: ${{ inputs.install_workers }}
-    needs: install-k3s-masters
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     
@@ -176,10 +175,36 @@ jobs:
         aws-region: ${{ vars.AWS_REGION }}
         role-session-name: GitHubActions-K3s-Workers
 
+    - name: Get K3s token from existing cluster
+      id: get-token
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Getting K3s token from existing cluster..."
+        TOKEN_COMMAND=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=["sudo cat /var/lib/rancher/k3s/server/node-token"]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$TOKEN_COMMAND" \
+          --instance-id "$FIRST_MASTER"
+        
+        K3S_TOKEN=$(aws ssm get-command-invocation \
+          --command-id "$TOKEN_COMMAND" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text | tr -d '\n')
+        
+        echo "token=$K3S_TOKEN" >> $GITHUB_OUTPUT
+
     - name: Install K3s on workers
       run: |
         WORKER_INSTANCES="${{ inputs.worker_instances }}"
-        K3S_TOKEN="${{ needs.install-k3s-masters.outputs.k3s_token }}"
+        K3S_TOKEN="${{ steps.get-token.outputs.token }}"
         
         if [ -n "$WORKER_INSTANCES" ] && [ "$WORKER_INSTANCES" != "" ]; then
           echo "Installing K3s on workers: $WORKER_INSTANCES"
@@ -209,7 +234,6 @@ jobs:
 
   verify-cluster:
     if: ${{ inputs.verify_cluster }}
-    needs: [install-k3s-masters, install-k3s-workers]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     
