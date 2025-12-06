@@ -24,10 +24,6 @@ on:
         description: 'K3s API server DNS name'
         required: true
         type: string
-      aws_region:
-        description: 'AWS region'
-        required: true
-        type: string
       environment:
         description: 'GitHub environment name'
         required: false
@@ -69,7 +65,7 @@ jobs:
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: ${{ inputs.aws_region }}
+        aws-region: ${{ vars.AWS_REGION }}
         role-session-name: GitHubActions-K3s-Masters
 
     - name: Install K3s on first master
@@ -177,7 +173,7 @@ jobs:
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: ${{ inputs.aws_region }}
+        aws-region: ${{ vars.AWS_REGION }}
         role-session-name: GitHubActions-K3s-Workers
 
     - name: Install K3s on workers
@@ -222,7 +218,7 @@ jobs:
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: ${{ inputs.aws_region }}
+        aws-region: ${{ vars.AWS_REGION }}
         role-session-name: GitHubActions-K3s-Verify
 
     - name: Verify cluster status
