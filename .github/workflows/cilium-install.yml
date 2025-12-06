@@ -1,0 +1,158 @@
+name: Cilium CNI Install
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'K3s cluster name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of master instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+      cilium_version:
+        description: 'Cilium version to install'
+        required: false
+        type: string
+        default: '1.14.5'
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  install-cilium:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-Cilium-Install
+
+    - name: Install Cilium CNI
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        CILIUM_VERSION="${{ inputs.cilium_version }}"
+        
+        echo "Installing Cilium CNI version $CILIUM_VERSION on cluster ${{ inputs.cluster_name }}"
+        echo "Using master instance: $FIRST_MASTER"
+        
+        # Install Cilium using helm on the first master
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 600 \
+          --parameters "commands=[
+            \"echo 'Installing Cilium CNI...'\",
+            \"# Add Cilium Helm repository\",
+            \"sudo k3s kubectl create namespace cilium-system --dry-run=client -o yaml | sudo k3s kubectl apply -f -\",
+            \"curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash\",
+            \"helm repo add cilium https://helm.cilium.io/\",
+            \"helm repo update\",
+            \"echo 'Installing Cilium with Helm...'\",
+            \"helm upgrade --install cilium cilium/cilium \\\\
+              --version $CILIUM_VERSION \\\\
+              --namespace cilium-system \\\\
+              --set kubeProxyReplacement=strict \\\\
+              --set k8sServiceHost=localhost \\\\
+              --set k8sServicePort=6443 \\\\
+              --set cluster.name=${{ inputs.cluster_name }} \\\\
+              --set cluster.id=1 \\\\
+              --set ipam.mode=kubernetes \\\\
+              --set tunnel=vxlan \\\\
+              --set loadBalancer.mode=snat \\\\
+              --set enableIPv4Masquerade=true \\\\
+              --set enableIPv6=false \\\\
+              --kubeconfig /etc/rancher/k3s/k3s.yaml\",
+            \"echo 'Waiting for Cilium to be ready...'\",
+            \"sudo k3s kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=cilium-operator -n cilium-system --timeout=300s\",
+            \"sudo k3s kubectl wait --for=condition=ready pod -l k8s-app=cilium -n cilium-system --timeout=300s\",
+            \"echo 'Cilium installation completed successfully'\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Command ID: $COMMAND_ID"
+        echo "Waiting for Cilium installation to complete..."
+        
+        if aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --cli-read-timeout 600; then
+          
+          echo "Cilium installation completed successfully"
+          
+          # Get the installation output
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$FIRST_MASTER" \
+            --query 'StandardOutputContent' \
+            --output text
+        else
+          echo "Cilium installation failed or timed out. Getting output..."
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$FIRST_MASTER" \
+            --query '[StandardOutputContent, StandardErrorContent]' \
+            --output text || echo "Could not retrieve command output"
+          exit 1
+        fi
+
+    - name: Verify Cilium installation
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying Cilium installation..."
+        
+        VERIFY_COMMAND=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "echo \"Checking Cilium pods...\"",
+            "sudo k3s kubectl get pods -n cilium-system -o wide",
+            "echo \"Checking Cilium status...\"",
+            "sudo k3s kubectl exec -n cilium-system ds/cilium -- cilium status --brief",
+            "echo \"Checking cluster connectivity...\"",
+            "sudo k3s kubectl get nodes -o wide",
+            "echo \"Cilium verification completed\""
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Verify command ID: $VERIFY_COMMAND"
+        
+        if aws ssm wait command-executed \
+          --command-id "$VERIFY_COMMAND" \
+          --instance-id "$FIRST_MASTER"; then
+          
+          echo "Cilium verification completed"
+          
+          # Get the verification output
+          aws ssm get-command-invocation \
+            --command-id "$VERIFY_COMMAND" \
+            --instance-id "$FIRST_MASTER" \
+            --query 'StandardOutputContent' \
+            --output text
+        else
+          echo "Cilium verification failed. Getting output..."
+          aws ssm get-command-invocation \
+            --command-id "$VERIFY_COMMAND" \
+            --instance-id "$FIRST_MASTER" \
+            --query '[StandardOutputContent, StandardErrorContent]' \
+            --output text || echo "Could not retrieve verification output"
+        fi
