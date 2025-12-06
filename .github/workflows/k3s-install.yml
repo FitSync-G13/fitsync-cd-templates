@@ -47,7 +47,7 @@ permissions:
 
 jobs:
   install-k3s-masters:
-    runs-on: [self-hosted, linux, aws, k3s]
+    runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     outputs:
       k3s_token: ${{ steps.get-token.outputs.token }}
@@ -161,7 +161,7 @@ jobs:
         fi
 
   install-k3s-workers:
-    runs-on: [self-hosted, linux, aws, k3s]
+    runs-on: ubuntu-latest
     needs: install-k3s-masters
     
     steps:
@@ -201,7 +201,7 @@ jobs:
         done
 
   verify-cluster:
-    runs-on: [self-hosted, linux, aws, k3s]
+    runs-on: ubuntu-latest
     needs: [install-k3s-masters, install-k3s-workers]
     
     steps:
