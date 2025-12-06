@@ -57,7 +57,7 @@ jobs:
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
+        aws-region: ${{ inputs.aws_region }}
         role-session-name: GitHubActions-K3s-Masters
 
     - name: Install K3s on first master
@@ -169,7 +169,7 @@ jobs:
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
+        aws-region: ${{ inputs.aws_region }}
         role-session-name: GitHubActions-K3s-Workers
 
     - name: Join workers to cluster
@@ -209,7 +209,7 @@ jobs:
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
+        aws-region: ${{ inputs.aws_region }}
         role-session-name: GitHubActions-K3s-Verify
 
     - name: Verify cluster status
