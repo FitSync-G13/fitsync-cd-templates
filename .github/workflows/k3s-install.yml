@@ -28,6 +28,11 @@ on:
         description: 'AWS region'
         required: true
         type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
     secrets:
       AWS_ROLE_ARN:
         description: 'AWS IAM role ARN for OIDC'
@@ -43,6 +48,7 @@ permissions:
 jobs:
   install-k3s-masters:
     runs-on: [self-hosted, linux, aws, k3s]
+    environment: ${{ inputs.environment }}
     outputs:
       k3s_token: ${{ steps.get-token.outputs.token }}
     
