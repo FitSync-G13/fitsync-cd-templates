@@ -1,1 +1,18 @@
+name: Deploy OpenSearch
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  install-opensearch:
+    uses: FitSync-G13/fitsync-cd-templates/.github/workflows/opensearch-install.yml@master
+    with:
+      aws_region: "us-west-2"                # or whatever region you used in Terraform
+      kubeconfig_ssm_parameter: "/fitsync/prod/k3s/kubeconfig"  # match Terraform output
+      opensearch_namespace: "monitoring"
+      opensearch_release_name: "opensearch"
+      opensearch_admin_password: ""          # optional; leave empty to use secret/random
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      OPENSEARCH_ADMIN_PASSWORD: ${{ secrets.OPENSEARCH_ADMIN_PASSWORD }}
 
