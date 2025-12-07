@@ -52,15 +52,13 @@ jobs:
           --timeout-seconds 600 \
           --parameters 'commands=[
             "echo Deploying Bookinfo sample application...",
-            "cd /tmp/istio-*",
-            "echo Applying Bookinfo application...",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml",
+            "bash -c \"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml\"",
             "echo Waiting for pods to be ready...",
             "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=productpage --timeout=300s",
             "echo Applying Bookinfo gateway...",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml",
+            "bash -c \"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml\"",
             "echo Applying destination rules...",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/destination-rule-all.yaml",
+            "bash -c \"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/destination-rule-all.yaml\"",
             "echo Sample app deployment completed"
           ]' \
           --query 'Command.CommandId' \
