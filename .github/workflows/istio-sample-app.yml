@@ -16,11 +16,6 @@ on:
         required: false
         type: string
         default: 'production'
-      enable_mtls:
-        description: 'Enable mTLS for the sample app'
-        required: false
-        type: boolean
-        default: true
     secrets:
       AWS_ROLE_ARN:
         required: true
@@ -46,11 +41,9 @@ jobs:
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
-        ENABLE_MTLS="${{ inputs.enable_mtls }}"
         
         echo "Deploying Bookinfo sample app on cluster ${{ inputs.cluster_name }}"
         echo "Using master instance: $FIRST_MASTER"
-        echo "mTLS enabled: $ENABLE_MTLS"
         
         # Deploy sample app
         COMMAND_ID=$(aws ssm send-command \
@@ -120,7 +113,6 @@ jobs:
         fi
 
     - name: Configure mTLS
-      if: ${{ inputs.enable_mtls }}
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
