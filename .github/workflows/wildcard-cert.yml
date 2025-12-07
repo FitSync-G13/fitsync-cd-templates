@@ -1,0 +1,143 @@
+name: Wildcard Certificate Setup
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'K3s cluster name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of master instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+      domain_name:
+        description: 'Base domain name (e.g., fitsync.online)'
+        required: true
+        type: string
+      subdomain_prefix:
+        description: 'Subdomain prefix (empty for prod, e.g., staging, dev)'
+        required: false
+        type: string
+        default: ''
+      cert_email:
+        description: 'Email for Let''s Encrypt'
+        required: true
+        type: string
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+      CLOUDFLARE_API_TOKEN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  setup-wildcard-cert:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-WildcardCert
+
+    - name: Setup Cloudflare API Token Secret
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Creating cloudflare-api-token secret..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
+          --parameters "commands=[
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl create namespace istio-system --dry-run=client -o yaml | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl delete secret cloudflare-api-token -n istio-system --ignore-not-found\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl create secret generic cloudflare-api-token -n istio-system --from-literal=api-token='${{ secrets.CLOUDFLARE_API_TOKEN }}'\",
+            \"echo Secret created\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        sleep 10
+        aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$FIRST_MASTER" --query 'Status' --output text
+
+    - name: Create ClusterIssuer and Certificate
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        DOMAIN_NAME="${{ inputs.domain_name }}"
+        CERT_EMAIL="${{ inputs.cert_email }}"
+        SUBDOMAIN_PREFIX="${{ inputs.subdomain_prefix }}"
+        
+        if [ -z "$SUBDOMAIN_PREFIX" ]; then
+          WILDCARD_DOMAIN="*.$DOMAIN_NAME"
+          ROOT_DOMAIN="$DOMAIN_NAME"
+          CERT_NAME="prod-wildcard-cert"
+        else
+          WILDCARD_DOMAIN="*.$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
+          ROOT_DOMAIN="$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
+          CERT_NAME="$SUBDOMAIN_PREFIX-wildcard-cert"
+        fi
+        
+        echo "Certificate: $WILDCARD_DOMAIN, $ROOT_DOMAIN"
+        
+        aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 600 \
+          --parameters "commands=[
+            \"cat <<'ISSUER_EOF' | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ${CERT_EMAIL}
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+    - dns01:
+        cloudflare:
+          apiTokenSecretRef:
+            name: cloudflare-api-token
+            key: api-token
+ISSUER_EOF\",
+            \"cat <<'CERT_EOF' | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ${CERT_NAME}
+  namespace: istio-system
+spec:
+  secretName: ${CERT_NAME}
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - ${WILDCARD_DOMAIN}
+  - ${ROOT_DOMAIN}
+CERT_EOF\",
+            \"sleep 30\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=Ready certificate/${CERT_NAME} -n istio-system --timeout=300s || echo 'Check manually'\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get certificate ${CERT_NAME} -n istio-system\"
+          ]" \
+          --output text
+        
+        sleep 60
+        echo "Certificate setup completed"

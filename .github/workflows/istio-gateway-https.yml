@@ -1,0 +1,113 @@
+name: Istio Gateway with HTTPS
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'K3s cluster name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of master instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+      domain_name:
+        description: 'Base domain name (e.g., fitsync.online)'
+        required: true
+        type: string
+      subdomain_prefix:
+        description: 'Subdomain prefix (empty for prod)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-gateway:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-IstioGateway
+
+    - name: Deploy Istio Gateway with HTTPS
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        DOMAIN_NAME="${{ inputs.domain_name }}"
+        SUBDOMAIN_PREFIX="${{ inputs.subdomain_prefix }}"
+        
+        if [ -z "$SUBDOMAIN_PREFIX" ]; then
+          CERT_NAME="prod-wildcard-cert"
+          GATEWAY_NAME="prod-gateway"
+          HOST_PATTERN="*.$DOMAIN_NAME"
+          ROOT_HOST="$DOMAIN_NAME"
+        else
+          CERT_NAME="$SUBDOMAIN_PREFIX-wildcard-cert"
+          GATEWAY_NAME="$SUBDOMAIN_PREFIX-gateway"
+          HOST_PATTERN="*.$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
+          ROOT_HOST="$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
+        fi
+        
+        echo "Deploying Gateway: $GATEWAY_NAME"
+        echo "Hosts: $HOST_PATTERN, $ROOT_HOST"
+        echo "Certificate: $CERT_NAME"
+        
+        aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
+          --parameters "commands=[
+            \"cat <<'GATEWAY_EOF' | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: ${GATEWAY_NAME}
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - ${HOST_PATTERN}
+    - ${ROOT_HOST}
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - ${HOST_PATTERN}
+    - ${ROOT_HOST}
+    tls:
+      mode: SIMPLE
+      credentialName: ${CERT_NAME}
+GATEWAY_EOF\",
+            \"echo Gateway deployed\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get gateway ${GATEWAY_NAME} -n istio-system\"
+          ]" \
+          --output text
+        
+        sleep 10
+        echo "Gateway deployment completed"

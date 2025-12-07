@@ -1,0 +1,148 @@
+name: cert-manager Install
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'K3s cluster name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of master instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+      cert_manager_version:
+        description: 'cert-manager version'
+        required: false
+        type: string
+        default: '1.16.2'
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  install-cert-manager:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-CertManager-Install
+
+    - name: Install cert-manager
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        CERT_MANAGER_VERSION="${{ inputs.cert_manager_version }}"
+        
+        echo "Installing cert-manager v${CERT_MANAGER_VERSION} on cluster ${{ inputs.cluster_name }}"
+        echo "Using master instance: $FIRST_MASTER"
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 600 \
+          --parameters "commands=[
+            \"echo Installing cert-manager v${CERT_MANAGER_VERSION}...\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v${CERT_MANAGER_VERSION}/cert-manager.yaml\",
+            \"echo Waiting for cert-manager to be ready...\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager -n cert-manager\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager-webhook -n cert-manager\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager-cainjector -n cert-manager\",
+            \"echo cert-manager installation completed\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Command ID: $COMMAND_ID"
+        echo "Waiting for installation to complete (max 10 minutes)..."
+        
+        MAX_ATTEMPTS=60
+        ATTEMPT=0
+        STATUS="InProgress"
+        
+        while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$STATUS" = "InProgress" ]; do
+          sleep 10
+          ATTEMPT=$((ATTEMPT + 1))
+          
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$FIRST_MASTER" \
+            --query 'Status' \
+            --output text 2>/dev/null || echo "InProgress")
+          
+          echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - Status: $STATUS"
+        done
+        
+        echo "Getting command output..."
+        STATUS_OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'Status' \
+          --output text)
+        
+        STDOUT_OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text)
+        
+        echo "Final Status: $STATUS_OUTPUT"
+        echo "Output:"
+        echo "$STDOUT_OUTPUT"
+        
+        if [ "$STATUS_OUTPUT" = "Success" ]; then
+          echo "cert-manager installation completed successfully"
+        else
+          echo "cert-manager installation failed with status: $STATUS_OUTPUT"
+          exit 1
+        fi
+
+    - name: Verify cert-manager
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying cert-manager installation..."
+        
+        VERIFY_COMMAND=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "echo === cert-manager Pods ===",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods -n cert-manager",
+            "echo",
+            "echo === cert-manager Version ===",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get deployment cert-manager -n cert-manager -o jsonpath=\"{.spec.template.spec.containers[0].image}\"",
+            "echo",
+            "echo",
+            "echo === cert-manager CRDs ===",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get crd | grep cert-manager",
+            "echo",
+            "echo Verification completed"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Verify command ID: $VERIFY_COMMAND"
+        sleep 10
+        
+        echo "cert-manager verification results:"
+        aws ssm get-command-invocation \
+          --command-id "$VERIFY_COMMAND" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text || echo "Could not retrieve verification output"

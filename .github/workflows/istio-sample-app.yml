@@ -16,6 +16,16 @@ on:
         required: false
         type: string
         default: 'production'
+      domain_name:
+        description: 'Domain name (empty for no TLS)'
+        required: false
+        type: string
+        default: ''
+      environment_subdomain:
+        description: 'Environment subdomain (empty for prod)'
+        required: false
+        type: string
+        default: ''
     secrets:
       AWS_ROLE_ARN:
         required: true
@@ -41,43 +51,77 @@ jobs:
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        DOMAIN_NAME="${{ inputs.domain_name }}"
+        ENV_SUBDOMAIN="${{ inputs.environment_subdomain }}"
+        
+        # Determine full domain and cert name
+        if [ -n "$DOMAIN_NAME" ]; then
+          if [ -z "$ENV_SUBDOMAIN" ]; then
+            FULL_DOMAIN="$DOMAIN_NAME"
+            CERT_NAME="prod-wildcard-cert"
+            HOST="bookinfo.$DOMAIN_NAME"
+          else
+            FULL_DOMAIN="$ENV_SUBDOMAIN.$DOMAIN_NAME"
+            CERT_NAME="$ENV_SUBDOMAIN-wildcard-cert"
+            HOST="bookinfo.$ENV_SUBDOMAIN.$DOMAIN_NAME"
+          fi
+          USE_TLS="true"
+        else
+          HOST="*"
+          USE_TLS="false"
+        fi
         
         echo "Deploying Bookinfo sample app on cluster ${{ inputs.cluster_name }}"
         echo "Using master instance: $FIRST_MASTER"
+        echo "TLS enabled: $USE_TLS"
+        echo "Host: $HOST"
         
         # Deploy sample app
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 600 \
-          --parameters 'commands=[
-            "echo Deploying Bookinfo sample application...",
-            "bash -c \"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml\"",
-            "echo Waiting for pods to be ready...",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=productpage --timeout=300s",
-            "echo Creating Bookinfo gateway with correct port...",
-            "echo apiVersion: networking.istio.io/v1 > /tmp/bookinfo-gateway.yaml",
-            "echo kind: Gateway >> /tmp/bookinfo-gateway.yaml",
-            "echo metadata: >> /tmp/bookinfo-gateway.yaml",
-            "echo \"  name: bookinfo-gateway\" >> /tmp/bookinfo-gateway.yaml",
-            "echo spec: >> /tmp/bookinfo-gateway.yaml",
-            "echo \"  selector:\" >> /tmp/bookinfo-gateway.yaml",
-            "echo \"    istio: ingressgateway\" >> /tmp/bookinfo-gateway.yaml",
-            "echo \"  servers:\" >> /tmp/bookinfo-gateway.yaml",
-            "echo \"  - port:\" >> /tmp/bookinfo-gateway.yaml",
-            "echo \"      number: 80\" >> /tmp/bookinfo-gateway.yaml",
-            "echo \"      name: http\" >> /tmp/bookinfo-gateway.yaml",
-            "echo \"      protocol: HTTP\" >> /tmp/bookinfo-gateway.yaml",
-            "echo \"    hosts:\" >> /tmp/bookinfo-gateway.yaml",
-            "echo \"    - \\\"*\\\"\" >> /tmp/bookinfo-gateway.yaml",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f /tmp/bookinfo-gateway.yaml",
-            "rm /tmp/bookinfo-gateway.yaml",
-            "echo Applying virtual service...",
-            "bash -c \"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml | grep -v Gateway\"",
-            "echo Applying destination rules...",
-            "bash -c \"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/destination-rule-all.yaml\"",
-            "echo Sample app deployment completed"
-          ]' \
+          --parameters "commands=[
+            \"echo Deploying Bookinfo sample application...\",
+            \"bash -c \\\"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml\\\"\",
+            \"echo Waiting for pods to be ready...\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=productpage --timeout=300s\",
+            \"echo Creating Bookinfo gateway...\",
+            \"cat <<'GATEWAY_EOF' | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: bookinfo-gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - \\\"${HOST}\\\"
+$(if [ \\\"$USE_TLS\\\" = \\\"true\\\" ]; then echo \\\"    tls:\n      httpsRedirect: true\"; fi)
+$(if [ \\\"$USE_TLS\\\" = \\\"true\\\" ]; then cat <<'TLS_EOF'
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - \\\"${HOST}\\\"
+    tls:
+      mode: SIMPLE
+      credentialName: ${CERT_NAME}
+TLS_EOF
+fi)
+GATEWAY_EOF\",
+            \"echo Applying virtual service...\",
+            \"bash -c \\\"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml | grep -v Gateway\\\"\",
+            \"echo Applying destination rules...\",
+            \"bash -c \\\"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/destination-rule-all.yaml\\\"\",
+            \"echo Sample app deployment completed\"
+          ]" \
           --query 'Command.CommandId' \
           --output text)
         
