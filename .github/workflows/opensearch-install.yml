@@ -11,7 +11,7 @@ jobs:
       kubeconfig_ssm_parameter: "/fitsync/prod/k3s/kubeconfig"  # match Terraform output
       opensearch_namespace: "monitoring"
       opensearch_release_name: "opensearch"
-      opensearch_admin_password: ""          # optional; leave empty to use secret/random
+      opensearch_admin_password: "p9c%Y#4!"          # optional; leave empty to use secret/random
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       OPENSEARCH_ADMIN_PASSWORD: ${{ secrets.OPENSEARCH_ADMIN_PASSWORD }}
