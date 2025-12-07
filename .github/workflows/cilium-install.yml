@@ -99,21 +99,26 @@ jobs:
         
         # Get the final output
         echo "Getting command output..."
-        OUTPUT=$(aws ssm get-command-invocation \
+        STATUS_OUTPUT=$(aws ssm get-command-invocation \
           --command-id "$COMMAND_ID" \
           --instance-id "$FIRST_MASTER" \
-          --query '[Status, StandardOutputContent, StandardErrorContent]' \
+          --query 'Status' \
           --output text)
         
-        FINAL_STATUS=$(echo "$OUTPUT" | head -n1)
-        echo "Final Status: $FINAL_STATUS"
-        echo "Output:"
-        echo "$OUTPUT" | tail -n +2
+        STDOUT_OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text)
         
-        if [ "$FINAL_STATUS" = "Success" ]; then
+        echo "Final Status: $STATUS_OUTPUT"
+        echo "Output:"
+        echo "$STDOUT_OUTPUT"
+        
+        if [ "$STATUS_OUTPUT" = "Success" ]; then
           echo "Cilium installation completed successfully"
         else
-          echo "Cilium installation failed with status: $FINAL_STATUS"
+          echo "Cilium installation failed with status: $STATUS_OUTPUT"
           exit 1
         fi
 
