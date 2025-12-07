@@ -17,18 +17,20 @@ on:
         type: string
         default: 'production'
       domain_name:
-        description: 'Base domain name (e.g., fitsync.online)'
-        required: true
+        description: 'Base domain name (leave empty to use vars.DOMAIN_NAME)'
+        required: false
         type: string
+        default: ''
       subdomain_prefix:
-        description: 'Subdomain prefix (empty for prod, e.g., staging, dev)'
+        description: 'Subdomain prefix (leave empty to use vars.SUBDOMAIN_PREFIX or for prod)'
         required: false
         type: string
         default: ''
       cert_email:
-        description: 'Email for Let''s Encrypt'
-        required: true
+        description: 'Email for Let''s Encrypt (leave empty to use vars.CERT_EMAIL)'
+        required: false
         type: string
+        default: ''
     secrets:
       AWS_ROLE_ARN:
         required: true
@@ -77,9 +79,33 @@ jobs:
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        # Use input or fall back to vars
         DOMAIN_NAME="${{ inputs.domain_name }}"
+        if [ -z "$DOMAIN_NAME" ]; then
+          DOMAIN_NAME="${{ vars.DOMAIN_NAME }}"
+        fi
+        
         CERT_EMAIL="${{ inputs.cert_email }}"
+        if [ -z "$CERT_EMAIL" ]; then
+          CERT_EMAIL="${{ vars.CERT_EMAIL }}"
+        fi
+        
         SUBDOMAIN_PREFIX="${{ inputs.subdomain_prefix }}"
+        if [ -z "$SUBDOMAIN_PREFIX" ]; then
+          SUBDOMAIN_PREFIX="${{ vars.SUBDOMAIN_PREFIX || '' }}"
+        fi
+        
+        # Validate required fields
+        if [ -z "$DOMAIN_NAME" ]; then
+          echo "Error: domain_name is required but was empty"
+          exit 1
+        fi
+        
+        if [ -z "$CERT_EMAIL" ]; then
+          echo "Error: cert_email is required but was empty"
+          exit 1
+        fi
         
         if [ -z "$SUBDOMAIN_PREFIX" ]; then
           WILDCARD_DOMAIN="*.$DOMAIN_NAME"
