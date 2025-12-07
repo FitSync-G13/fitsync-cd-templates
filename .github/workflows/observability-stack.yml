@@ -1,0 +1,113 @@
+name: Install Observability Stack
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'K3s cluster name'
+        required: true
+        type: string
+      observe_instances:
+        description: 'Comma-separated list of observe instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  install-observability-stack:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-Istio-SampleApp
+
+    - name: Install Observability Stack
+      run: |
+        OBSERVE_INSTANCES="${{ inputs.observe_instances }}"
+        FIRST_OBSERVE=$(echo $OBSERVE_INSTANCES | cut -d',' -f1)
+        
+        echo "Installing Observability Stack"
+        echo "Observe instances: $OBSERVE_INSTANCES"
+        echo "Using first observe instance: $FIRST_OBSERVE"
+        
+        # COMMAND_ID=$(aws ssm send-command \
+        #   --instance-ids "$FIRST_MASTER" \
+        #   --document-name "AWS-RunShellScript" \
+        #   --timeout-seconds 600 \
+        #   --parameters "commands=[
+        #     \"echo Deploying Bookinfo application...\",
+        #     \"bash -c 'cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml'\",
+        #     \"echo Waiting for pods...\",
+        #     \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=productpage --timeout=300s\",
+        #     \"echo Applying VirtualService for host ${HOST}...\",
+        #     \"echo apiVersion: networking.istio.io/v1beta1 > /tmp/bookinfo-vs.yaml\",
+        #     \"echo kind: VirtualService >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo metadata: >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '  name: bookinfo' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo spec: >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '  hosts:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '  - \\\"*\\\"' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '  gateways:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '  - istio-system/${GATEWAY_NAME}' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '  http:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '  - match:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '        exact: /' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    rewrite:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '      uri: /productpage' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    route:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    - destination:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '        host: productpage' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '        port:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '          number: 9080' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '  - match:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '        exact: /productpage' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '        prefix: /static' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '        exact: /login' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '        exact: /logout' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '        prefix: /api/v1/products' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    route:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '    - destination:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '        host: productpage' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '        port:' >> /tmp/bookinfo-vs.yaml\",
+        #     \"echo '          number: 9080' >> /tmp/bookinfo-vs.yaml\",
+        #     \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f /tmp/bookinfo-vs.yaml\",
+        #     \"rm /tmp/bookinfo-vs.yaml\",
+        #     \"echo Applying destination rules...\",
+        #     \"bash -c 'cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/destination-rule-all.yaml'\",
+        #     \"echo Deployment completed\"
+        #   ]" \
+        #   --query 'Command.CommandId' \
+        #   --output text)
+        
+        # echo "Command ID: $COMMAND_ID"
+        # sleep 30
+        
+        # aws ssm get-command-invocation \
+        #   --command-id "$COMMAND_ID" \
+        #   --instance-id "$FIRST_MASTER" \
+        #   --query 'StandardOutputContent' \
+        #   --output text
+
