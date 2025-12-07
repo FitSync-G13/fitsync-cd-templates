@@ -74,34 +74,36 @@ jobs:
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 300 \
           --parameters "commands=[
-            \"echo 'apiVersion: networking.istio.io/v1beta1' > /tmp/gateway.yaml\",
-            \"echo 'kind: Gateway' >> /tmp/gateway.yaml\",
-            \"echo 'metadata:' >> /tmp/gateway.yaml\",
-            \"echo '  name: ${GATEWAY_NAME}' >> /tmp/gateway.yaml\",
-            \"echo '  namespace: istio-system' >> /tmp/gateway.yaml\",
-            \"echo 'spec:' >> /tmp/gateway.yaml\",
-            \"echo '  selector:' >> /tmp/gateway.yaml\",
-            \"echo '    istio: ingressgateway' >> /tmp/gateway.yaml\",
-            \"echo '  servers:' >> /tmp/gateway.yaml\",
-            \"echo '  - port:' >> /tmp/gateway.yaml\",
-            \"echo '      number: 80' >> /tmp/gateway.yaml\",
-            \"echo '      name: http' >> /tmp/gateway.yaml\",
-            \"echo '      protocol: HTTP' >> /tmp/gateway.yaml\",
-            \"echo '    hosts:' >> /tmp/gateway.yaml\",
-            \"echo '    - \\\"${HOST_PATTERN}\\\"' >> /tmp/gateway.yaml\",
-            \"echo '    - \\\"${ROOT_HOST}\\\"' >> /tmp/gateway.yaml\",
-            \"echo '    tls:' >> /tmp/gateway.yaml\",
-            \"echo '      httpsRedirect: true' >> /tmp/gateway.yaml\",
-            \"echo '  - port:' >> /tmp/gateway.yaml\",
-            \"echo '      number: 443' >> /tmp/gateway.yaml\",
-            \"echo '      name: https' >> /tmp/gateway.yaml\",
-            \"echo '      protocol: HTTPS' >> /tmp/gateway.yaml\",
-            \"echo '    hosts:' >> /tmp/gateway.yaml\",
-            \"echo '    - \\\"${HOST_PATTERN}\\\"' >> /tmp/gateway.yaml\",
-            \"echo '    - \\\"${ROOT_HOST}\\\"' >> /tmp/gateway.yaml\",
-            \"echo '    tls:' >> /tmp/gateway.yaml\",
-            \"echo '      mode: SIMPLE' >> /tmp/gateway.yaml\",
-            \"echo '      credentialName: ${CERT_NAME}' >> /tmp/gateway.yaml\",
+            \"cat > /tmp/gateway.yaml <<EOF
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: ${GATEWAY_NAME}
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - \\\"${HOST_PATTERN}\\\"
+    - \\\"${ROOT_HOST}\\\"
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - \\\"${HOST_PATTERN}\\\"
+    - \\\"${ROOT_HOST}\\\"
+    tls:
+      mode: SIMPLE
+      credentialName: ${CERT_NAME}
+EOF\",
             \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f /tmp/gateway.yaml\",
             \"rm /tmp/gateway.yaml\",
             \"echo Gateway deployed\",
