@@ -66,9 +66,9 @@ jobs:
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 300 \
           --parameters "commands=[
-            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl create namespace istio-system --dry-run=client -o yaml | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -\",
-            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl delete secret cloudflare-api-token -n istio-system --ignore-not-found\",
-            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl create secret generic cloudflare-api-token -n istio-system --from-literal=api-token='${{ secrets.CLOUDFLARE_API_TOKEN }}'\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl create namespace cert-manager --dry-run=client -o yaml | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl delete secret cloudflare-api-token -n cert-manager --ignore-not-found\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl create secret generic cloudflare-api-token -n cert-manager --from-literal=api-token='${{ secrets.CLOUDFLARE_API_TOKEN }}'\",
             \"echo Secret created\"
           ]" \
           --output text
