@@ -1,0 +1,196 @@
+name: Istio Sample App Deployment
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'K3s cluster name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of master instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+      enable_mtls:
+        description: 'Enable mTLS for the sample app'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-sample-app:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-Istio-SampleApp
+
+    - name: Deploy Bookinfo Sample Application
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        ENABLE_MTLS="${{ inputs.enable_mtls }}"
+        
+        echo "Deploying Bookinfo sample app on cluster ${{ inputs.cluster_name }}"
+        echo "Using master instance: $FIRST_MASTER"
+        echo "mTLS enabled: $ENABLE_MTLS"
+        
+        # Deploy sample app
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 600 \
+          --parameters 'commands=[
+            "echo Deploying Bookinfo sample application...",
+            "cd /tmp/istio-*",
+            "echo Applying Bookinfo application...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml",
+            "echo Waiting for pods to be ready...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=productpage --timeout=300s",
+            "echo Applying Bookinfo gateway...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml",
+            "echo Applying destination rules...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/destination-rule-all.yaml",
+            "echo Sample app deployment completed"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Command ID: $COMMAND_ID"
+        echo "Waiting for deployment to complete (max 10 minutes)..."
+        
+        # Poll for command completion
+        MAX_ATTEMPTS=60
+        ATTEMPT=0
+        STATUS="InProgress"
+        
+        while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$STATUS" = "InProgress" ]; do
+          sleep 10
+          ATTEMPT=$((ATTEMPT + 1))
+          
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$FIRST_MASTER" \
+            --query 'Status' \
+            --output text 2>/dev/null || echo "InProgress")
+          
+          echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - Status: $STATUS"
+        done
+        
+        # Get the final output
+        echo "Getting command output..."
+        STATUS_OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'Status' \
+          --output text)
+        
+        STDOUT_OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text)
+        
+        echo "Final Status: $STATUS_OUTPUT"
+        echo "Output:"
+        echo "$STDOUT_OUTPUT"
+        
+        if [ "$STATUS_OUTPUT" = "Success" ]; then
+          echo "Sample app deployment completed successfully"
+        else
+          echo "Sample app deployment failed with status: $STATUS_OUTPUT"
+          exit 1
+        fi
+
+    - name: Configure mTLS
+      if: ${{ inputs.enable_mtls }}
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Configuring mTLS for sample app..."
+        
+        MTLS_COMMAND=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "echo Configuring mTLS with STRICT mode...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f - <<EOF
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: default
+spec:
+  mtls:
+    mode: STRICT
+EOF",
+            "echo mTLS configuration completed"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "mTLS command ID: $MTLS_COMMAND"
+        sleep 10
+        
+        # Get mTLS configuration output
+        aws ssm get-command-invocation \
+          --command-id "$MTLS_COMMAND" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text || echo "Could not retrieve mTLS output"
+
+    - name: Verify Sample App
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying sample app deployment..."
+        
+        VERIFY_COMMAND=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "echo Checking application pods...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods -l app=productpage",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods -l app=details",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods -l app=reviews",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods -l app=ratings",
+            "echo Checking gateway...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get gateway",
+            "echo Checking virtual services...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get virtualservice",
+            "echo Getting ingress gateway service...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get svc -n istio-system",
+            "echo Verification completed"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Verify command ID: $VERIFY_COMMAND"
+        sleep 15
+        
+        # Get verification output
+        echo "Sample app verification results:"
+        aws ssm get-command-invocation \
+          --command-id "$VERIFY_COMMAND" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text || echo "Could not retrieve verification output"
