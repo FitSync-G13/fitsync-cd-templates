@@ -55,8 +55,10 @@ jobs:
             "bash -c \"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml\"",
             "echo Waiting for pods to be ready...",
             "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=productpage --timeout=300s",
-            "echo Applying Bookinfo gateway...",
-            "bash -c \"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml\"",
+            "echo Creating Bookinfo gateway with correct port...",
+            "cat <<EOF | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -\napiVersion: networking.istio.io/v1\nkind: Gateway\nmetadata:\n  name: bookinfo-gateway\nspec:\n  selector:\n    istio: ingressgateway\n  servers:\n  - port:\n      number: 80\n      name: http\n      protocol: HTTP\n    hosts:\n    - \"*\"\nEOF",
+            "echo Applying virtual service...",
+            "bash -c \"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml | grep -v Gateway\"",
             "echo Applying destination rules...",
             "bash -c \"cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/destination-rule-all.yaml\"",
             "echo Sample app deployment completed"
