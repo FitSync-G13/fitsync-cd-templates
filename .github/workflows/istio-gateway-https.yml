@@ -70,8 +70,8 @@ jobs:
         fi
         
         if [ -z "$SUBDOMAIN_PREFIX" ]; then
-          CERT_NAME="prod-wildcard-cert"
-          GATEWAY_NAME="prod-gateway"
+          CERT_NAME="${{ vars.PROJECT_NAME }}-wildcard-cert"
+          GATEWAY_NAME="${{ vars.PROJECT_NAME }}-gateway"
           HOST_PATTERN="*.$DOMAIN_NAME"
           ROOT_HOST="$DOMAIN_NAME"
         else

@@ -56,14 +56,14 @@ jobs:
         
         if [ -n "$DOMAIN_NAME" ]; then
           if [ -z "$SUBDOMAIN_PREFIX" ]; then
-            GATEWAY_NAME="prod-gateway"
+            GATEWAY_NAME="${{ vars.PROJECT_NAME }}-gateway"
             HOST="bookinfo.$DOMAIN_NAME"
           else
             GATEWAY_NAME="$SUBDOMAIN_PREFIX-gateway"
             HOST="bookinfo.$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
           fi
         else
-          GATEWAY_NAME="prod-gateway"
+          GATEWAY_NAME="${{ vars.PROJECT_NAME }}-gateway"
           HOST="*"
         fi
         
