@@ -108,9 +108,10 @@ jobs:
         fi
         
         if [ -z "$SUBDOMAIN_PREFIX" ]; then
+          ENV_NAME="${{ inputs.environment }}"
           WILDCARD_DOMAIN="*.$DOMAIN_NAME"
           ROOT_DOMAIN="$DOMAIN_NAME"
-          CERT_NAME="prod-wildcard-cert"
+          CERT_NAME="${ENV_NAME}-wildcard-cert"
         else
           WILDCARD_DOMAIN="*.$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
           ROOT_DOMAIN="$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
