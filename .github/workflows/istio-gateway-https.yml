@@ -53,6 +53,12 @@ jobs:
         DOMAIN_NAME="${{ inputs.domain_name }}"
         SUBDOMAIN_PREFIX="${{ inputs.subdomain_prefix }}"
         
+        # Validate domain name
+        if [ -z "$DOMAIN_NAME" ]; then
+          echo "Error: domain_name is required but was empty"
+          exit 1
+        fi
+        
         if [ -z "$SUBDOMAIN_PREFIX" ]; then
           CERT_NAME="prod-wildcard-cert"
           GATEWAY_NAME="prod-gateway"
@@ -105,7 +111,7 @@ jobs:
             \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f /tmp/gateway.yaml\",
             \"rm /tmp/gateway.yaml\",
             \"echo Gateway deployed\",
-            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get gateway ${GATEWAY_NAME} -n istio-system\"
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get gateway.networking.istio.io ${GATEWAY_NAME} -n istio-system\"
           ]" \
           --query 'Command.CommandId' \
           --output text)
