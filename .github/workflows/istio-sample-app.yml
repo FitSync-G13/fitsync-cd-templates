@@ -132,7 +132,7 @@ jobs:
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "echo Configuring mTLS with STRICT mode...",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f - <<EOF
+            "cat <<EOF | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -
 apiVersion: security.istio.io/v1beta1
 kind: PeerAuthentication
 metadata:
