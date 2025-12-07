@@ -76,14 +76,21 @@ jobs:
         echo "Installing K3s on first master: $FIRST_MASTER"
         
         # Install K3s on first master with cluster-init (disable default CNI for Cilium)
+        K3S_VERSION="${{ inputs.k3s_version }}"
+        INSTALL_CMD="curl -sfL https://get.k3s.io | "
+        if [ -n "$K3S_VERSION" ]; then
+          INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_VERSION=$K3S_VERSION "
+        fi
+        INSTALL_CMD="${INSTALL_CMD}sh -s - server --cluster-init --flannel-backend=none --disable-network-policy --disable=traefik --tls-san=${{ inputs.k3s_api_dns }}"
+        
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ inputs.k3s_version }} sh -s - server --cluster-init --flannel-backend=none --disable-network-policy --disable=traefik --tls-san=${{ inputs.k3s_api_dns }}",
-            "sudo systemctl enable k3s",
-            "sudo systemctl start k3s"
-          ]' \
+          --parameters "commands=[
+            \"$INSTALL_CMD\",
+            \"sudo systemctl enable k3s\",
+            \"sudo systemctl start k3s\"
+          ]" \
           --query 'Command.CommandId' \
           --output text)
         
@@ -133,20 +140,28 @@ jobs:
         
         # Get additional masters (skip first one)
         ADDITIONAL_MASTERS=$(echo $MASTER_INSTANCES | cut -d',' -f2-)
+        K3S_VERSION="${{ inputs.k3s_version }}"
         
         if [ "$ADDITIONAL_MASTERS" != "$FIRST_MASTER" ] && [ -n "$ADDITIONAL_MASTERS" ]; then
           echo "Installing K3s on additional masters: $ADDITIONAL_MASTERS"
+          
+          INSTALL_CMD="curl -sfL https://get.k3s.io | "
+          if [ -n "$K3S_VERSION" ]; then
+            INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_VERSION=$K3S_VERSION "
+          fi
           
           IFS=',' read -ra MASTERS <<< "$ADDITIONAL_MASTERS"
           for master in "${MASTERS[@]}"; do
             if [ "$master" != "$FIRST_MASTER" ]; then
               echo "Installing K3s on master: $master"
               
+              MASTER_INSTALL_CMD="${INSTALL_CMD}sh -s - server --server https://$FIRST_MASTER:6443 --token $K3S_TOKEN --flannel-backend=none --disable-network-policy --disable=traefik --tls-san=${{ inputs.k3s_api_dns }}"
+              
               COMMAND_ID=$(aws ssm send-command \
                 --instance-ids "$master" \
                 --document-name "AWS-RunShellScript" \
                 --parameters "commands=[
-                  \"curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ inputs.k3s_version }} sh -s - server --server https://$FIRST_MASTER:6443 --token $K3S_TOKEN --flannel-backend=none --disable-network-policy --disable=traefik --tls-san=${{ inputs.k3s_api_dns }}\",
+                  \"$MASTER_INSTALL_CMD\",
                   \"sudo systemctl enable k3s\",
                   \"sudo systemctl start k3s\"
                 ]" \
@@ -205,6 +220,13 @@ jobs:
       run: |
         WORKER_INSTANCES="${{ inputs.worker_instances }}"
         K3S_TOKEN="${{ steps.get-token.outputs.token }}"
+        K3S_VERSION="${{ inputs.k3s_version }}"
+        
+        INSTALL_CMD="curl -sfL https://get.k3s.io | "
+        if [ -n "$K3S_VERSION" ]; then
+          INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_VERSION=$K3S_VERSION "
+        fi
+        INSTALL_CMD="${INSTALL_CMD}sh -s - agent --server https://${{ inputs.k3s_api_dns }}:6443 --token $K3S_TOKEN"
         
         if [ -n "$WORKER_INSTANCES" ] && [ "$WORKER_INSTANCES" != "" ]; then
           echo "Installing K3s on workers: $WORKER_INSTANCES"
@@ -219,7 +241,7 @@ jobs:
               --timeout-seconds 600 \
               --parameters "commands=[
                 \"echo 'Starting K3s agent installation...'\",
-                \"curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ inputs.k3s_version }} sh -s - agent --server https://${{ inputs.k3s_api_dns }}:6443 --token $K3S_TOKEN\",
+                \"$INSTALL_CMD\",
                 \"echo 'K3s agent installed, enabling service...'\",
                 \"sudo systemctl enable k3s-agent\",
                 \"sudo systemctl start k3s-agent\",
