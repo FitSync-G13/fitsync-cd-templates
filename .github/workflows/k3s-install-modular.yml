@@ -75,21 +75,19 @@ jobs:
         
         echo "Installing K3s on first master: $FIRST_MASTER"
         
-        # Install K3s on first master with cluster-init (disable default CNI for Cilium)
+        # Install K3s on first master - disable default CNI for Cilium (per Cilium docs)
         K3S_VERSION="${{ inputs.k3s_version }}"
         INSTALL_CMD="curl -sfL https://get.k3s.io | "
         if [ -n "$K3S_VERSION" ]; then
           INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_VERSION=$K3S_VERSION "
         fi
-        INSTALL_CMD="${INSTALL_CMD}sh -s - server --cluster-init --flannel-backend=none --disable-network-policy --disable=traefik --tls-san=${{ inputs.k3s_api_dns }}"
+        INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_EXEC='--flannel-backend=none --disable-network-policy' sh -"
         
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --parameters "commands=[
-            \"$INSTALL_CMD\",
-            \"sudo systemctl enable k3s\",
-            \"sudo systemctl start k3s\"
+            \"$INSTALL_CMD\"
           ]" \
           --query 'Command.CommandId' \
           --output text)
@@ -226,7 +224,7 @@ jobs:
         if [ -n "$K3S_VERSION" ]; then
           INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_VERSION=$K3S_VERSION "
         fi
-        INSTALL_CMD="${INSTALL_CMD}sh -s - agent --server https://${{ inputs.k3s_api_dns }}:6443 --token $K3S_TOKEN"
+        INSTALL_CMD="${INSTALL_CMD}K3S_URL=https://${{ inputs.k3s_api_dns }}:6443 K3S_TOKEN=$K3S_TOKEN sh -"
         
         if [ -n "$WORKER_INSTANCES" ] && [ "$WORKER_INSTANCES" != "" ]; then
           echo "Installing K3s on workers: $WORKER_INSTANCES"
