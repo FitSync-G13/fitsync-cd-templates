@@ -17,10 +17,10 @@ on:
         type: string
         default: 'production'
       cert_manager_version:
-        description: 'cert-manager version'
+        description: 'cert-manager version (leave empty for latest)'
         required: false
         type: string
-        default: '1.16.2'
+        default: ''
     secrets:
       AWS_ROLE_ARN:
         required: true
@@ -35,6 +35,19 @@ jobs:
     environment: ${{ inputs.environment }}
     
     steps:
+    - name: Determine cert-manager version
+      id: version
+      run: |
+        if [ -z "${{ inputs.cert_manager_version }}" ]; then
+          echo "Fetching latest cert-manager version..."
+          LATEST_VERSION=$(curl -s https://api.github.com/repos/cert-manager/cert-manager/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+          echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          echo "Using latest version: $LATEST_VERSION"
+        else
+          echo "version=${{ inputs.cert_manager_version }}" >> $GITHUB_OUTPUT
+          echo "Using specified version: ${{ inputs.cert_manager_version }}"
+        fi
+    
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -46,7 +59,7 @@ jobs:
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
-        CERT_MANAGER_VERSION="${{ inputs.cert_manager_version }}"
+        CERT_MANAGER_VERSION="${{ steps.version.outputs.version }}"
         
         echo "Installing cert-manager v${CERT_MANAGER_VERSION} on cluster ${{ inputs.cluster_name }}"
         echo "Using master instance: $FIRST_MASTER"
