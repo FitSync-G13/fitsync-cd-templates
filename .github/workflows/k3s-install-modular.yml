@@ -81,7 +81,7 @@ jobs:
         if [ -n "$K3S_VERSION" ]; then
           INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_VERSION=$K3S_VERSION "
         fi
-        INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_EXEC='--flannel-backend=none --disable-network-policy' sh -"
+        INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_EXEC='--flannel-backend=none --disable-network-policy --tls-san=${{ inputs.k3s_api_dns }}' sh -"
         
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
