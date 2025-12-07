@@ -69,8 +69,6 @@ jobs:
             "rm -f cilium-linux-${CLI_ARCH}.tar.gz cilium-linux-${CLI_ARCH}.tar.gz.sha256sum",
             "echo Installing Cilium with Cilium CLI...",
             "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium install --version 1.18.4 --set ipam.operator.clusterPoolIPv4PodCIDRList=10.42.0.0/16 --set kubeProxyReplacement=false --set socketLB.hostNamespaceOnly=true --set cni.exclusive=false",
-            "echo Waiting for Cilium to be ready...",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium status --wait || echo Cilium may still be initializing",
             "echo Cilium installation completed successfully"
           ]' \
           --query 'Command.CommandId' \
