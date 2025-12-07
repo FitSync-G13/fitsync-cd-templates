@@ -75,12 +75,12 @@ jobs:
         
         echo "Installing K3s on first master: $FIRST_MASTER"
         
-        # Install K3s on first master with cluster-init
+        # Install K3s on first master with cluster-init (disable default CNI for Cilium)
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
-            "curl -sfL https://get.k3s.io | sh -s - server --cluster-init --tls-san=${{ inputs.k3s_api_dns }}",
+            "curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ inputs.k3s_version }} sh -s - server --cluster-init --flannel-backend=none --disable-network-policy --disable=traefik --tls-san=${{ inputs.k3s_api_dns }}",
             "sudo systemctl enable k3s",
             "sudo systemctl start k3s"
           ]' \
@@ -146,7 +146,7 @@ jobs:
                 --instance-ids "$master" \
                 --document-name "AWS-RunShellScript" \
                 --parameters "commands=[
-                  \"curl -sfL https://get.k3s.io | sh -s - server --server https://$FIRST_MASTER:6443 --token $K3S_TOKEN --tls-san=${{ inputs.k3s_api_dns }}\",
+                  \"curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ inputs.k3s_version }} sh -s - server --server https://$FIRST_MASTER:6443 --token $K3S_TOKEN --flannel-backend=none --disable-network-policy --disable=traefik --tls-san=${{ inputs.k3s_api_dns }}\",
                   \"sudo systemctl enable k3s\",
                   \"sudo systemctl start k3s\"
                 ]" \
@@ -219,7 +219,7 @@ jobs:
               --timeout-seconds 600 \
               --parameters "commands=[
                 \"echo 'Starting K3s agent installation...'\",
-                \"curl -sfL https://get.k3s.io | sh -s - agent --server https://${{ inputs.k3s_api_dns }}:6443 --token $K3S_TOKEN\",
+                \"curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ inputs.k3s_version }} sh -s - agent --server https://${{ inputs.k3s_api_dns }}:6443 --token $K3S_TOKEN\",
                 \"echo 'K3s agent installed, enabling service...'\",
                 \"sudo systemctl enable k3s-agent\",
                 \"sudo systemctl start k3s-agent\",
