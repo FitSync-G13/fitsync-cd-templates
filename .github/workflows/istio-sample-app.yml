@@ -122,27 +122,49 @@ jobs:
         MTLS_COMMAND=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
           --parameters 'commands=[
             "echo Configuring mTLS with STRICT mode...",
-            "echo apiVersion: security.istio.io/v1beta1 > /tmp/peer-auth.yaml",
-            "echo kind: PeerAuthentication >> /tmp/peer-auth.yaml",
-            "echo metadata: >> /tmp/peer-auth.yaml",
-            "echo \"  name: default\" >> /tmp/peer-auth.yaml",
-            "echo \"  namespace: default\" >> /tmp/peer-auth.yaml",
-            "echo spec: >> /tmp/peer-auth.yaml",
-            "echo \"  mtls:\" >> /tmp/peer-auth.yaml",
-            "echo \"    mode: STRICT\" >> /tmp/peer-auth.yaml",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f /tmp/peer-auth.yaml",
-            "rm /tmp/peer-auth.yaml",
-            "echo mTLS configuration completed"
+            "cat <<EOF | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -\napiVersion: security.istio.io/v1beta1\nkind: PeerAuthentication\nmetadata:\n  name: default\n  namespace: default\nspec:\n  mtls:\n    mode: STRICT\nEOF",
+            "echo Restarting all bookinfo pods to inject sidecars...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl delete pods -l app=productpage",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl delete pods -l app=details",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl delete pods -l app=ratings",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl delete pods -l app=reviews",
+            "echo Waiting for pods to restart with sidecars...",
+            "sleep 30",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=productpage --timeout=120s",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=details --timeout=120s",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=ratings --timeout=120s",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=reviews --timeout=120s",
+            "echo mTLS configuration and pod restart completed"
           ]' \
           --query 'Command.CommandId' \
           --output text)
         
         echo "mTLS command ID: $MTLS_COMMAND"
-        sleep 10
+        echo "Waiting for mTLS configuration and pod restart (max 5 minutes)..."
+        
+        # Poll for command completion
+        MAX_ATTEMPTS=30
+        ATTEMPT=0
+        STATUS="InProgress"
+        
+        while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$STATUS" = "InProgress" ]; do
+          sleep 10
+          ATTEMPT=$((ATTEMPT + 1))
+          
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$MTLS_COMMAND" \
+            --instance-id "$FIRST_MASTER" \
+            --query 'Status' \
+            --output text 2>/dev/null || echo "InProgress")
+          
+          echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - Status: $STATUS"
+        done
         
         # Get mTLS configuration output
+        echo "mTLS configuration results:"
         aws ssm get-command-invocation \
           --command-id "$MTLS_COMMAND" \
           --instance-id "$FIRST_MASTER" \
@@ -160,17 +182,24 @@ jobs:
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
-            "echo Checking application pods...",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods -l app=productpage",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods -l app=details",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods -l app=reviews",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods -l app=ratings",
-            "echo Checking gateway...",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get gateway",
-            "echo Checking virtual services...",
+            "echo === Application Pods ===",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods",
+            "echo",
+            "echo === Checking Sidecars (should show 2/2 for each pod) ===",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get pods -o jsonpath=\"{range .items[*]}{.metadata.name}{\\\"\\\\t\\\"}{.status.containerStatuses[*].name}{\\\"\\\\n\\\"}{end}\"",
+            "echo",
+            "echo === Gateway Configuration ===",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get gateway.networking.istio.io bookinfo-gateway -o yaml | grep -A5 port:",
+            "echo",
+            "echo === Virtual Services ===",
             "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get virtualservice",
-            "echo Getting ingress gateway service...",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get svc -n istio-system",
+            "echo",
+            "echo === Ingress Gateway Service ===",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get svc istio-ingressgateway -n istio-system",
+            "echo",
+            "echo === mTLS Configuration ===",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get peerauthentication",
+            "echo",
             "echo Verification completed"
           ]' \
           --query 'Command.CommandId' \
