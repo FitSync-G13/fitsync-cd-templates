@@ -63,7 +63,7 @@ jobs:
             HOST="bookinfo.$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
           fi
         else
-          GATEWAY_NAME="bookinfo-gateway"
+          GATEWAY_NAME="prod-gateway"
           HOST="*"
         fi
         
