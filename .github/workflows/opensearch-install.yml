@@ -1,0 +1,159 @@
+# OpenSearch Install Workflow (Reusable)
+# --------------------------------------
+# This reusable GitHub Actions workflow:
+#  - Connects to AWS using OIDC and an assumed IAM role
+#  - Fetches the K3s kubeconfig from AWS SSM Parameter Store
+#  - Installs / upgrades an OpenSearch cluster (and Dashboards) on the K3s cluster via Helm
+#  - Handles the admin password (input > secret > random generation)
+#  - Exposes OpenSearch as an internal-only ClusterIP service
+
+name: OpenSearch Install (K3s Cluster)
+
+on:
+  workflow_call:
+    inputs:
+      aws_region:
+        description: "AWS region where the EC2/K3s cluster is running"
+        required: true
+        type: string
+      kubeconfig_ssm_parameter:
+        description: "Name of the SSM parameter that stores the kubeconfig for the K3s cluster"
+        required: true
+        type: string
+      opensearch_namespace:
+        description: "Kubernetes namespace to install OpenSearch into"
+        required: false
+        default: "monitoring"
+        type: string
+      opensearch_release_name:
+        description: "Helm release name for OpenSearch"
+        required: false
+        default: "opensearch"
+        type: string
+      opensearch_admin_password:
+        description: "Initial admin password (optional, will fall back to secret if empty)"
+        required: false
+        default: ""
+        type: string
+    secrets:
+      AWS_ROLE_ARN:
+        description: "IAM Role ARN used by GitHub OIDC to access AWS"
+        required: true
+      OPENSEARCH_ADMIN_PASSWORD:
+        description: "Fallback admin password for OpenSearch if input is not provided"
+        required: false
+
+jobs:
+  install-opensearch:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ${{ inputs.aws_region }}
+      KUBECONFIG_SSM_PARAMETER: ${{ inputs.kubeconfig_ssm_parameter }}
+      OPENSEARCH_NAMESPACE: ${{ inputs.opensearch_namespace }}
+      OPENSEARCH_RELEASE_NAME: ${{ inputs.opensearch_release_name }}
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Checkout templates repo
+        uses: actions/checkout@v4
+
+      - name: Retrieve kubeconfig from SSM Parameter Store
+        run: |
+          aws ssm get-parameter \
+            --name "${KUBECONFIG_SSM_PARAMETER}" \
+            --with-decryption \
+            --query 'Parameter.Value' \
+            --output text > kubeconfig
+
+          mkdir -p $HOME/.kube
+          mv kubeconfig $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+
+      - name: Resolve OpenSearch admin password
+        id: resolve_password
+        run: |
+          if [ -n "${{ inputs.opensearch_admin_password }}" ]; then
+            PASS="${{ inputs.opensearch_admin_password }}"
+          elif [ -n "${{ secrets.OPENSEARCH_ADMIN_PASSWORD }}" ]; then
+            PASS="${{ secrets.OPENSEARCH_ADMIN_PASSWORD }}"
+          else
+            PASS="$(openssl rand -base64 16)"
+          fi
+          echo "OPENSEARCH_ADMIN_PASSWORD_RESOLVED=$PASS" >> $GITHUB_OUTPUT
+
+      - name: Create minimal OpenSearch values file
+        run: |
+          cat > opensearch-values.yaml << 'EOF'
+          config:
+            opensearch.yml: |-
+              cluster.name: fitsync-opensearch-cluster
+              network.host: 0.0.0.0
+
+          extraEnvs:
+            - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+              value: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+
+          singleNode: true
+
+          persistence:
+            enabled: true
+            size: 10Gi
+
+          service:
+            type: ClusterIP
+          EOF
+
+          sed -i "s|\${OPENSEARCH_INITIAL_ADMIN_PASSWORD}|${{ steps.resolve_password.outputs.OPENSEARCH_ADMIN_PASSWORD_RESOLVED }}|g" opensearch-values.yaml
+
+      - name: Add OpenSearch Helm repo
+        run: |
+          helm repo add opensearch https://opensearch-project.github.io/helm-charts/
+          helm repo update
+
+      - name: Install / Upgrade OpenSearch via Helm
+        run: |
+          helm upgrade --install "${OPENSEARCH_RELEASE_NAME}" opensearch/opensearch \
+            --namespace "${OPENSEARCH_NAMESPACE}" \
+            -f opensearch-values.yaml
+
+      - name: Create minimal OpenSearch Dashboards values file
+        run: |
+          cat > opensearch-dashboards-values.yaml << 'EOF'
+          opensearchHosts: "http://opensearch-master:9200"
+          service:
+            type: ClusterIP
+          EOF
+
+      - name: Install / Upgrade OpenSearch Dashboards via Helm
+        run: |
+          helm upgrade --install "${OPENSEARCH_RELEASE_NAME}-dashboards" opensearch/opensearch-dashboards \
+            --namespace "${OPENSEARCH_NAMESPACE}" \
+            -f opensearch-dashboards-values.yaml
+
+      - name: Show internal services and access info
+        run: |
+          echo "=== OpenSearch services in namespace ${OPENSEARCH_NAMESPACE} ==="
+          kubectl get svc -n "${OPENSEARCH_NAMESPACE}" | grep opensearch || true
+
+          echo ""
+          echo "From inside the cluster, you can reach OpenSearch at:"
+          echo "  http://opensearch-master.${OPENSEARCH_NAMESPACE}.svc.cluster.local:9200"
+          echo ""
+          echo "Admin user: admin"
+          echo "Admin password: ${{ steps.resolve_password.outputs.OPENSEARCH_ADMIN_PASSWORD_RESOLVED }}"
