@@ -59,7 +59,7 @@ jobs:
         
         echo "Creating cloudflare-api-token secret..."
         
-        COMMAND_ID=$(aws ssm send-command \
+        aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 300 \
@@ -69,11 +69,9 @@ jobs:
             \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl create secret generic cloudflare-api-token -n istio-system --from-literal=api-token='${{ secrets.CLOUDFLARE_API_TOKEN }}'\",
             \"echo Secret created\"
           ]" \
-          --query 'Command.CommandId' \
-          --output text)
+          --output text
         
         sleep 10
-        aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$FIRST_MASTER" --query 'Status' --output text
 
     - name: Create ClusterIssuer and Certificate
       run: |
@@ -95,49 +93,60 @@ jobs:
         
         echo "Certificate: $WILDCARD_DOMAIN, $ROOT_DOMAIN"
         
-        aws ssm send-command \
+        COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 600 \
           --parameters "commands=[
-            \"cat <<'ISSUER_EOF' | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: ${CERT_EMAIL}
-    privateKeySecretRef:
-      name: letsencrypt-prod-key
-    solvers:
-    - dns01:
-        cloudflare:
-          apiTokenSecretRef:
-            name: cloudflare-api-token
-            key: api-token
-ISSUER_EOF\",
-            \"cat <<'CERT_EOF' | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: ${CERT_NAME}
-  namespace: istio-system
-spec:
-  secretName: ${CERT_NAME}
-  issuerRef:
-    name: letsencrypt-prod
-    kind: ClusterIssuer
-  dnsNames:
-  - ${WILDCARD_DOMAIN}
-  - ${ROOT_DOMAIN}
-CERT_EOF\",
+            \"echo Creating ClusterIssuer...\",
+            \"echo apiVersion: cert-manager.io/v1 > /tmp/issuer.yaml\",
+            \"echo kind: ClusterIssuer >> /tmp/issuer.yaml\",
+            \"echo metadata: >> /tmp/issuer.yaml\",
+            \"echo '  name: letsencrypt-prod' >> /tmp/issuer.yaml\",
+            \"echo spec: >> /tmp/issuer.yaml\",
+            \"echo '  acme:' >> /tmp/issuer.yaml\",
+            \"echo '    server: https://acme-v02.api.letsencrypt.org/directory' >> /tmp/issuer.yaml\",
+            \"echo '    email: ${CERT_EMAIL}' >> /tmp/issuer.yaml\",
+            \"echo '    privateKeySecretRef:' >> /tmp/issuer.yaml\",
+            \"echo '      name: letsencrypt-prod-key' >> /tmp/issuer.yaml\",
+            \"echo '    solvers:' >> /tmp/issuer.yaml\",
+            \"echo '    - dns01:' >> /tmp/issuer.yaml\",
+            \"echo '        cloudflare:' >> /tmp/issuer.yaml\",
+            \"echo '          apiTokenSecretRef:' >> /tmp/issuer.yaml\",
+            \"echo '            name: cloudflare-api-token' >> /tmp/issuer.yaml\",
+            \"echo '            key: api-token' >> /tmp/issuer.yaml\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f /tmp/issuer.yaml\",
+            \"rm /tmp/issuer.yaml\",
+            \"echo Creating Certificate...\",
+            \"echo apiVersion: cert-manager.io/v1 > /tmp/cert.yaml\",
+            \"echo kind: Certificate >> /tmp/cert.yaml\",
+            \"echo metadata: >> /tmp/cert.yaml\",
+            \"echo '  name: ${CERT_NAME}' >> /tmp/cert.yaml\",
+            \"echo '  namespace: istio-system' >> /tmp/cert.yaml\",
+            \"echo spec: >> /tmp/cert.yaml\",
+            \"echo '  secretName: ${CERT_NAME}' >> /tmp/cert.yaml\",
+            \"echo '  issuerRef:' >> /tmp/cert.yaml\",
+            \"echo '    name: letsencrypt-prod' >> /tmp/cert.yaml\",
+            \"echo '    kind: ClusterIssuer' >> /tmp/cert.yaml\",
+            \"echo '  dnsNames:' >> /tmp/cert.yaml\",
+            \"echo '  - ${WILDCARD_DOMAIN}' >> /tmp/cert.yaml\",
+            \"echo '  - ${ROOT_DOMAIN}' >> /tmp/cert.yaml\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f /tmp/cert.yaml\",
+            \"rm /tmp/cert.yaml\",
             \"sleep 30\",
             \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=Ready certificate/${CERT_NAME} -n istio-system --timeout=300s || echo 'Check manually'\",
             \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get certificate ${CERT_NAME} -n istio-system\"
           ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Command ID: $COMMAND_ID"
+        sleep 60
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
           --output text
         
-        sleep 60
         echo "Certificate setup completed"
