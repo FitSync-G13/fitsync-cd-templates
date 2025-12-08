@@ -58,10 +58,10 @@ jobs:
           if [ -z "$SUBDOMAIN_PREFIX" ]; then
             ENV_NAME="${{ inputs.environment }}"
             GATEWAY_NAME="${ENV_NAME}-gateway"
-            HOST="bookinfo.$DOMAIN_NAME"
+            HOST="$DOMAIN_NAME"
           else
             GATEWAY_NAME="$SUBDOMAIN_PREFIX-gateway"
-            HOST="bookinfo.$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
+            HOST="$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
           fi
         else
           ENV_NAME="${{ inputs.environment }}"
@@ -89,7 +89,7 @@ jobs:
             \"echo '  name: bookinfo' >> /tmp/bookinfo-vs.yaml\",
             \"echo spec: >> /tmp/bookinfo-vs.yaml\",
             \"echo '  hosts:' >> /tmp/bookinfo-vs.yaml\",
-            \"echo '  - \\\"*\\\"' >> /tmp/bookinfo-vs.yaml\",
+            \"echo '  - \\\"${HOST}\\\"' >> /tmp/bookinfo-vs.yaml\",
             \"echo '  gateways:' >> /tmp/bookinfo-vs.yaml\",
             \"echo '  - istio-system/${GATEWAY_NAME}' >> /tmp/bookinfo-vs.yaml\",
             \"echo '  http:' >> /tmp/bookinfo-vs.yaml\",
