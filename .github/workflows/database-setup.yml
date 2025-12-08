@@ -225,17 +225,23 @@ jobs:
 
     - name: Obtain TLS certificate
       run: |
+        if [ -z "${{ vars.DB_PRIVATE_DNS }}" ]; then
+          echo "Error: DB_PRIVATE_DNS variable is not set"
+          echo "Please apply Terraform changes first to create the private DNS zone"
+          exit 1
+        fi
+        
         echo "Obtaining TLS certificate for ${{ vars.DB_PRIVATE_DNS }}..."
         
         aws ssm send-command \
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
           --document-name "AWS-RunShellScript" \
-          --parameters commands="[
-            \"mkdir -p /root/.secrets\",
-            \"echo 'dns_cloudflare_api_token = ${{ secrets.CLOUDFLARE_API_TOKEN }}' > /root/.secrets/cloudflare.ini\",
-            \"chmod 600 /root/.secrets/cloudflare.ini\",
-            \"certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/cloudflare.ini -d ${{ vars.DB_PRIVATE_DNS }} --non-interactive --agree-tos --email ${{ vars.CERT_EMAIL }} --dns-cloudflare-propagation-seconds 30\"
-          ]" \
+          --parameters commands='[
+            "mkdir -p /root/.secrets",
+            "echo \"dns_cloudflare_api_token = ${{ secrets.CLOUDFLARE_API_TOKEN }}\" > /root/.secrets/cloudflare.ini",
+            "chmod 600 /root/.secrets/cloudflare.ini",
+            "certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/cloudflare.ini -d ${{ vars.DB_PRIVATE_DNS }} --non-interactive --agree-tos --email ${{ vars.CERT_EMAIL }} --dns-cloudflare-propagation-seconds 30"
+          ]' \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
