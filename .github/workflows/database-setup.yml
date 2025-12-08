@@ -219,11 +219,6 @@ jobs:
 
     - name: Obtain TLS certificate
       run: |
-        if [ -z "${{ vars.DB_PRIVATE_DNS }}" ]; then
-          echo "Error: DB_PRIVATE_DNS variable is not set"
-          exit 1
-        fi
-        
         echo "Obtaining TLS certificate for ${{ vars.DB_PRIVATE_DNS }}..."
         
         aws ssm send-command \
@@ -232,7 +227,8 @@ jobs:
           --parameters commands='[
             "if [ -d /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }} ]; then echo \"Certificate exists\"; exit 0; fi",
             "mkdir -p /root/.secrets",
-            "echo \"dns_cloudflare_api_token = ${{ secrets.CLOUDFLARE_API_TOKEN }}\" > /root/.secrets/cloudflare.ini",
+            "echo \"dns_cloudflare_email = ${{ vars.CERT_EMAIL }}\" > /root/.secrets/cloudflare.ini",
+            "echo \"dns_cloudflare_api_key = ${{ secrets.CLOUDFLARE_API_TOKEN }}\" >> /root/.secrets/cloudflare.ini",
             "chmod 600 /root/.secrets/cloudflare.ini",
             "certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/cloudflare.ini -d ${{ vars.DB_PRIVATE_DNS }} --non-interactive --agree-tos --email ${{ vars.CERT_EMAIL }} --dns-cloudflare-propagation-seconds 30"
           ]' \
