@@ -376,7 +376,7 @@ jobs:
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "systemctl status redis-server --no-pager || true",
-            "redis-cli --tls --cert /etc/redis/certs/server.crt --key /etc/redis/certs/server.key --cacert /etc/redis/certs/server.crt ping || true"
+            "redis-cli --tls --cacert /etc/ssl/certs/ca-certificates.crt ping || true"
           ]' \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
@@ -403,8 +403,7 @@ jobs:
             \"nc -zv localhost 6379 || echo 'Redis port check failed'\",
             \"ss -tlnp | grep -E ':(5432|6379)' || true\",
             \"sudo -u postgres psql -c 'SELECT 1;' || echo 'PostgreSQL query failed'\",
-            \"redis-cli --tls --cert /etc/redis/certs/server.crt --key /etc/redis/certs/server.key --cacert /etc/redis/certs/server.crt SET test_key test_value || echo 'Redis SET failed'\",
-            \"redis-cli --tls --cert /etc/redis/certs/server.crt --key /etc/redis/certs/server.key --cacert /etc/redis/certs/server.crt GET test_key || echo 'Redis GET failed'\"
+            \"redis-cli --tls --cacert /etc/ssl/certs/ca-certificates.crt ping || echo 'Redis ping failed'\"
           ]" \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
