@@ -82,8 +82,11 @@ jobs:
           ROOT_HOST="$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
         fi
         
+        # Use ALB DNS for Gateway hosts (ALB sends requests with its own DNS name)
+        ALB_DNS="${{ vars.ALB_DNS_NAME }}"
+        
         echo "Deploying Gateway: $GATEWAY_NAME"
-        echo "Hosts: $HOST_PATTERN, $ROOT_HOST"
+        echo "ALB DNS: $ALB_DNS"
         echo "Certificate: $CERT_NAME"
         
         COMMAND_ID=$(aws ssm send-command \
@@ -105,8 +108,7 @@ jobs:
             \"echo '      name: http' >> /tmp/gateway.yaml\",
             \"echo '      protocol: HTTP' >> /tmp/gateway.yaml\",
             \"echo '    hosts:' >> /tmp/gateway.yaml\",
-            \"echo '    - \\\"${HOST_PATTERN}\\\"' >> /tmp/gateway.yaml\",
-            \"echo '    - \\\"${ROOT_HOST}\\\"' >> /tmp/gateway.yaml\",
+            \"echo '    - \\\"${ALB_DNS}\\\"' >> /tmp/gateway.yaml\",
             \"echo '    tls:' >> /tmp/gateway.yaml\",
             \"echo '      httpsRedirect: true' >> /tmp/gateway.yaml\",
             \"echo '  - port:' >> /tmp/gateway.yaml\",
@@ -114,8 +116,7 @@ jobs:
             \"echo '      name: https' >> /tmp/gateway.yaml\",
             \"echo '      protocol: HTTPS' >> /tmp/gateway.yaml\",
             \"echo '    hosts:' >> /tmp/gateway.yaml\",
-            \"echo '    - \\\"${HOST_PATTERN}\\\"' >> /tmp/gateway.yaml\",
-            \"echo '    - \\\"${ROOT_HOST}\\\"' >> /tmp/gateway.yaml\",
+            \"echo '    - \\\"${ALB_DNS}\\\"' >> /tmp/gateway.yaml\",
             \"echo '    tls:' >> /tmp/gateway.yaml\",
             \"echo '      mode: SIMPLE' >> /tmp/gateway.yaml\",
             \"echo '      credentialName: ${CERT_NAME}' >> /tmp/gateway.yaml\",
