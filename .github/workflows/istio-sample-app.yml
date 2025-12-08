@@ -89,7 +89,7 @@ jobs:
             \"echo '  name: bookinfo' >> /tmp/bookinfo-vs.yaml\",
             \"echo spec: >> /tmp/bookinfo-vs.yaml\",
             \"echo '  hosts:' >> /tmp/bookinfo-vs.yaml\",
-            \"echo '  - \\\"${HOST}\\\"' >> /tmp/bookinfo-vs.yaml\",
+            \"echo '  - \\\"*\\\"' >> /tmp/bookinfo-vs.yaml\",
             \"echo '  gateways:' >> /tmp/bookinfo-vs.yaml\",
             \"echo '  - istio-system/${GATEWAY_NAME}' >> /tmp/bookinfo-vs.yaml\",
             \"echo '  http:' >> /tmp/bookinfo-vs.yaml\",
