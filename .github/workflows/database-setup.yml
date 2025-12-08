@@ -74,7 +74,7 @@ jobs:
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
-            "if dpkg -l | grep -q postgresql-${{ inputs.postgres_version }}; then echo \"PostgreSQL ${{ inputs.postgres_version }} already installed\"; exit 0; fi",
+            "if dpkg -l | grep -q postgresql-${{ inputs.postgres_version }}; then echo \"PostgreSQL already installed\"; exit 0; fi",
             "apt update",
             "apt install -y wget ca-certificates",
             "wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -",
@@ -88,7 +88,7 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        echo "Waiting for PostgreSQL installation (Command: $COMMAND_ID)..."
+        echo "Waiting for PostgreSQL installation..."
         
         for i in {1..60}; do
           STATUS=$(aws ssm get-command-invocation \
@@ -98,10 +98,10 @@ jobs:
             --output text 2>/dev/null || echo "Pending")
           
           if [ "$STATUS" == "Success" ]; then
-            echo "PostgreSQL ${{ inputs.postgres_version }} installed successfully"
+            echo "PostgreSQL installed"
             break
           elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
-            echo "PostgreSQL installation failed with status: $STATUS"
+            echo "PostgreSQL installation failed"
             aws ssm get-command-invocation \
               --command-id $COMMAND_ID \
               --instance-id ${{ steps.get-db.outputs.instance_id }} \
@@ -110,7 +110,7 @@ jobs:
             exit 1
           fi
           
-          echo "Status: $STATUS, waiting... ($i/60)"
+          echo "Status: $STATUS ($i/60)"
           sleep 5
         done
 
@@ -130,10 +130,7 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
+        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
         echo "PostgreSQL configured"
 
     - name: Install Redis ${{ inputs.redis_version }}
@@ -157,7 +154,7 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        echo "Waiting for Redis installation (Command: $COMMAND_ID)..."
+        echo "Waiting for Redis installation..."
         
         for i in {1..60}; do
           STATUS=$(aws ssm get-command-invocation \
@@ -167,10 +164,10 @@ jobs:
             --output text 2>/dev/null || echo "Pending")
           
           if [ "$STATUS" == "Success" ]; then
-            echo "Redis ${{ inputs.redis_version }} installed successfully"
+            echo "Redis installed"
             break
           elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
-            echo "Redis installation failed with status: $STATUS"
+            echo "Redis installation failed"
             aws ssm get-command-invocation \
               --command-id $COMMAND_ID \
               --instance-id ${{ steps.get-db.outputs.instance_id }} \
@@ -179,7 +176,7 @@ jobs:
             exit 1
           fi
           
-          echo "Status: $STATUS, waiting... ($i/60)"
+          echo "Status: $STATUS ($i/60)"
           sleep 5
         done
 
@@ -199,10 +196,7 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
+        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
         echo "Redis configured"
 
     - name: Install Certbot
@@ -220,17 +214,13 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
+        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
         echo "Certbot installed"
 
     - name: Obtain TLS certificate
       run: |
         if [ -z "${{ vars.DB_PRIVATE_DNS }}" ]; then
           echo "Error: DB_PRIVATE_DNS variable is not set"
-          echo "Please apply Terraform changes first to create the private DNS zone"
           exit 1
         fi
         
@@ -240,7 +230,7 @@ jobs:
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
           --document-name "AWS-RunShellScript" \
           --parameters commands='[
-            "if [ -d /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }} ]; then echo \"Certificate already exists\"; exit 0; fi",
+            "if [ -d /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }} ]; then echo \"Certificate exists\"; exit 0; fi",
             "mkdir -p /root/.secrets",
             "echo \"dns_cloudflare_api_token = ${{ secrets.CLOUDFLARE_API_TOKEN }}\" > /root/.secrets/cloudflare.ini",
             "chmod 600 /root/.secrets/cloudflare.ini",
@@ -250,7 +240,7 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        echo "Waiting for certificate (Command: $COMMAND_ID)..."
+        echo "Waiting for certificate..."
         
         for i in {1..60}; do
           STATUS=$(aws ssm get-command-invocation \
@@ -260,10 +250,10 @@ jobs:
             --output text 2>/dev/null || echo "Pending")
           
           if [ "$STATUS" == "Success" ]; then
-            echo "TLS certificate obtained for ${{ vars.DB_PRIVATE_DNS }}"
+            echo "Certificate obtained"
             break
           elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
-            echo "Certificate acquisition failed with status: $STATUS"
+            echo "Certificate acquisition failed"
             aws ssm get-command-invocation \
               --command-id $COMMAND_ID \
               --instance-id ${{ steps.get-db.outputs.instance_id }} \
@@ -272,13 +262,13 @@ jobs:
             exit 1
           fi
           
-          echo "Status: $STATUS, waiting... ($i/60)"
+          echo "Status: $STATUS ($i/60)"
           sleep 5
         done
 
     - name: Configure PostgreSQL TLS
       run: |
-        echo "Configuring PostgreSQL with TLS..."
+        echo "Configuring PostgreSQL TLS..."
         
         aws ssm send-command \
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
@@ -297,15 +287,12 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
+        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
         echo "PostgreSQL TLS configured"
 
     - name: Configure Redis TLS
       run: |
-        echo "Configuring Redis with TLS..."
+        echo "Configuring Redis TLS..."
         
         aws ssm send-command \
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
@@ -327,22 +314,19 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
+        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
         echo "Redis TLS configured"
 
     - name: Setup certificate auto-renewal
       run: |
-        echo "Setting up certificate auto-renewal..."
+        echo "Setting up auto-renewal..."
         
         aws ssm send-command \
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "mkdir -p /etc/letsencrypt/renewal-hooks/deploy",
-            "if [ -f /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh ]; then echo \"Renewal hook already exists\"; exit 0; fi",
+            "if [ -f /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh ]; then exit 0; fi",
             "cat > /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh << '\''EOF'\''\n#!/bin/bash\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.crt\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key\nchown postgres:postgres /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.*\nchmod 600 /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /etc/redis/certs/server.crt\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /etc/redis/certs/server.key\nchown redis:redis /etc/redis/certs/*\nchmod 600 /etc/redis/certs/server.key\nsystemctl restart postgresql\nsystemctl restart redis-server\nEOF",
             "chmod +x /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh"
           ]' \
@@ -350,293 +334,7 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
-        echo "Auto-renewal configured"
-      run: |
-        echo "Installing PostgreSQL ${{ inputs.postgres_version }}..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "apt update",
-            "apt install -y wget ca-certificates",
-            "wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -",
-            "echo \"deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main\" > /etc/apt/sources.list.d/pgdg.list",
-            "apt update",
-            "apt install -y postgresql-${{ inputs.postgres_version }} postgresql-contrib-${{ inputs.postgres_version }}",
-            "systemctl enable postgresql",
-            "systemctl start postgresql"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        echo "Waiting for PostgreSQL installation (Command: $COMMAND_ID)..."
-        
-        for i in {1..60}; do
-          STATUS=$(aws ssm get-command-invocation \
-            --command-id $COMMAND_ID \
-            --instance-id ${{ steps.get-db.outputs.instance_id }} \
-            --query 'Status' \
-            --output text 2>/dev/null || echo "Pending")
-          
-          if [ "$STATUS" == "Success" ]; then
-            echo "PostgreSQL ${{ inputs.postgres_version }} installed successfully"
-            break
-          elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
-            echo "PostgreSQL installation failed with status: $STATUS"
-            aws ssm get-command-invocation \
-              --command-id $COMMAND_ID \
-              --instance-id ${{ steps.get-db.outputs.instance_id }} \
-              --query 'StandardErrorContent' \
-              --output text
-            exit 1
-          fi
-          
-          echo "Status: $STATUS, waiting... ($i/60)"
-          sleep 5
-        done
-
-    - name: Configure PostgreSQL
-      run: |
-        echo "Configuring PostgreSQL..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "sed -i \"s/#listen_addresses = '\''localhost'\''/listen_addresses = '\''*'\''/\" /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf",
-            "echo \"host all all 10.0.0.0/8 scram-sha-256\" >> /etc/postgresql/${{ inputs.postgres_version }}/main/pg_hba.conf",
-            "systemctl restart postgresql"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
-        echo "PostgreSQL configured"
-
-    - name: Install Redis ${{ inputs.redis_version }}
-      run: |
-        echo "Installing Redis ${{ inputs.redis_version }}..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "apt install -y lsb-release curl gpg",
-            "curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg",
-            "echo \"deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main\" | tee /etc/apt/sources.list.d/redis.list",
-            "apt update",
-            "apt install -y redis-server",
-            "systemctl enable redis-server",
-            "systemctl start redis-server"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        echo "Waiting for Redis installation (Command: $COMMAND_ID)..."
-        
-        for i in {1..60}; do
-          STATUS=$(aws ssm get-command-invocation \
-            --command-id $COMMAND_ID \
-            --instance-id ${{ steps.get-db.outputs.instance_id }} \
-            --query 'Status' \
-            --output text 2>/dev/null || echo "Pending")
-          
-          if [ "$STATUS" == "Success" ]; then
-            echo "Redis ${{ inputs.redis_version }} installed successfully"
-            break
-          elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
-            echo "Redis installation failed with status: $STATUS"
-            aws ssm get-command-invocation \
-              --command-id $COMMAND_ID \
-              --instance-id ${{ steps.get-db.outputs.instance_id }} \
-              --query 'StandardErrorContent' \
-              --output text
-            exit 1
-          fi
-          
-          echo "Status: $STATUS, waiting... ($i/60)"
-          sleep 5
-        done
-
-    - name: Configure Redis
-      run: |
-        echo "Configuring Redis..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "sed -i \"s/^bind 127.0.0.1 -::1/bind 0.0.0.0/\" /etc/redis/redis.conf",
-            "sed -i \"s/^protected-mode yes/protected-mode no/\" /etc/redis/redis.conf",
-            "systemctl restart redis-server"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
-        echo "Redis configured"
-
-    - name: Install Certbot
-      run: |
-        echo "Installing Certbot..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "apt install -y certbot python3-certbot-dns-cloudflare"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
-        echo "Certbot installed"
-
-    - name: Obtain TLS certificate
-      run: |
-        if [ -z "${{ vars.DB_PRIVATE_DNS }}" ]; then
-          echo "Error: DB_PRIVATE_DNS variable is not set"
-          echo "Please apply Terraform changes first to create the private DNS zone"
-          exit 1
-        fi
-        
-        echo "Obtaining TLS certificate for ${{ vars.DB_PRIVATE_DNS }}..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters commands='[
-            "mkdir -p /root/.secrets",
-            "echo \"dns_cloudflare_api_token = ${{ secrets.CLOUDFLARE_API_TOKEN }}\" > /root/.secrets/cloudflare.ini",
-            "chmod 600 /root/.secrets/cloudflare.ini",
-            "certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/cloudflare.ini -d ${{ vars.DB_PRIVATE_DNS }} --non-interactive --agree-tos --email ${{ vars.CERT_EMAIL }} --dns-cloudflare-propagation-seconds 30"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        echo "Waiting for certificate (Command: $COMMAND_ID)..."
-        
-        for i in {1..60}; do
-          STATUS=$(aws ssm get-command-invocation \
-            --command-id $COMMAND_ID \
-            --instance-id ${{ steps.get-db.outputs.instance_id }} \
-            --query 'Status' \
-            --output text 2>/dev/null || echo "Pending")
-          
-          if [ "$STATUS" == "Success" ]; then
-            echo "TLS certificate obtained for ${{ vars.DB_PRIVATE_DNS }}"
-            break
-          elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
-            echo "Certificate acquisition failed with status: $STATUS"
-            aws ssm get-command-invocation \
-              --command-id $COMMAND_ID \
-              --instance-id ${{ steps.get-db.outputs.instance_id }} \
-              --query 'StandardErrorContent' \
-              --output text
-            exit 1
-          fi
-          
-          echo "Status: $STATUS, waiting... ($i/60)"
-          sleep 5
-        done
-
-    - name: Configure PostgreSQL TLS
-      run: |
-        echo "Configuring PostgreSQL with TLS..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters commands="[
-            \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.crt\",
-            \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key\",
-            \"chown postgres:postgres /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.*\",
-            \"chmod 600 /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key\",
-            \"sed -i 's/#ssl = off/ssl = on/' /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf\",
-            \"sed -i \\\"s|#ssl_cert_file = 'server.crt'|ssl_cert_file = '/var/lib/postgresql/${{ inputs.postgres_version }}/main/server.crt'|\\\" /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf\",
-            \"sed -i \\\"s|#ssl_key_file = 'server.key'|ssl_key_file = '/var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key'|\\\" /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf\",
-            \"systemctl restart postgresql\"
-          ]" \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
-        echo "PostgreSQL TLS configured"
-
-    - name: Configure Redis TLS
-      run: |
-        echo "Configuring Redis with TLS..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters commands="[
-            \"mkdir -p /etc/redis/certs\",
-            \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /etc/redis/certs/server.crt\",
-            \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /etc/redis/certs/server.key\",
-            \"chown redis:redis /etc/redis/certs/*\",
-            \"chmod 600 /etc/redis/certs/server.key\",
-            \"sed -i 's/^port 6379/port 0/' /etc/redis/redis.conf\",
-            \"grep -q '^tls-port' /etc/redis/redis.conf || echo 'tls-port 6379' >> /etc/redis/redis.conf\",
-            \"grep -q '^tls-cert-file' /etc/redis/redis.conf || echo 'tls-cert-file /etc/redis/certs/server.crt' >> /etc/redis/redis.conf\",
-            \"grep -q '^tls-key-file' /etc/redis/redis.conf || echo 'tls-key-file /etc/redis/certs/server.key' >> /etc/redis/redis.conf\",
-            \"grep -q '^tls-ca-cert-file' /etc/redis/redis.conf || echo 'tls-ca-cert-file /etc/redis/certs/server.crt' >> /etc/redis/redis.conf\",
-            \"systemctl restart redis-server\"
-          ]" \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
-        echo "Redis TLS configured"
-
-    - name: Setup certificate auto-renewal
-      run: |
-        echo "Setting up certificate auto-renewal..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "mkdir -p /etc/letsencrypt/renewal-hooks/deploy",
-            "cat > /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh << '\''EOF'\''\n#!/bin/bash\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.crt\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key\nchown postgres:postgres /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.*\nchmod 600 /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /etc/redis/certs/server.crt\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /etc/redis/certs/server.key\nchown redis:redis /etc/redis/certs/*\nchmod 600 /etc/redis/certs/server.key\nsystemctl restart postgresql\nsystemctl restart redis-server\nEOF",
-            "chmod +x /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
+        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
         echo "Auto-renewal configured"
 
     - name: Verify PostgreSQL
@@ -655,11 +353,8 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
+        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
         
-        echo "PostgreSQL verification:"
         aws ssm get-command-invocation \
           --command-id $COMMAND_ID \
           --instance-id ${{ steps.get-db.outputs.instance_id }} \
@@ -681,11 +376,8 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
+        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
         
-        echo "Redis verification:"
         aws ssm get-command-invocation \
           --command-id $COMMAND_ID \
           --instance-id ${{ steps.get-db.outputs.instance_id }} \
@@ -694,7 +386,7 @@ jobs:
 
     - name: Test database connectivity
       run: |
-        echo "Testing database connectivity..."
+        echo "Testing connectivity..."
         
         aws ssm send-command \
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
@@ -712,16 +404,7 @@ jobs:
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }}
-        
-        echo "Connectivity test results:"
-        aws ssm get-command-invocation \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }} \
-          --query 'StandardOutputContent' \
-          --output text
+        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
         
         STATUS=$(aws ssm get-command-invocation \
           --command-id $COMMAND_ID \
@@ -730,7 +413,7 @@ jobs:
           --output text)
         
         if [ "$STATUS" != "Success" ]; then
-          echo "Error: Connectivity test failed"
+          echo "Connectivity test failed"
           aws ssm get-command-invocation \
             --command-id $COMMAND_ID \
             --instance-id ${{ steps.get-db.outputs.instance_id }} \
@@ -739,7 +422,7 @@ jobs:
           exit 1
         fi
         
-        echo "All connectivity tests passed!"
+        echo "All tests passed!"
 
     - name: Summary
       run: |
@@ -749,10 +432,8 @@ jobs:
         echo "PostgreSQL: ${{ inputs.postgres_version }}"
         echo "Redis: ${{ inputs.redis_version }}"
         echo "Database DNS: ${{ vars.DB_PRIVATE_DNS }}"
-        echo "TLS: Enabled with Let's Encrypt"
-        echo "Auto-renewal: Configured"
+        echo "TLS: Enabled"
         echo "=========================================="
-        echo ""
         echo "Connection strings:"
         echo "PostgreSQL: postgresql://user:password@${{ vars.DB_PRIVATE_DNS }}:5432/dbname?sslmode=require"
         echo "Redis: redis://${{ vars.DB_PRIVATE_DNS }}:6379?tls=true"
