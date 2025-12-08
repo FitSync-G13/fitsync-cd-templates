@@ -180,25 +180,6 @@ jobs:
           sleep 5
         done
 
-    - name: Configure Redis
-      run: |
-        echo "Configuring Redis..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "grep -q \"^bind 0.0.0.0\" /etc/redis/redis.conf || sed -i \"s/^bind 127.0.0.1 -::1/bind 0.0.0.0/\" /etc/redis/redis.conf",
-            "grep -q \"^protected-mode no\" /etc/redis/redis.conf || sed -i \"s/^protected-mode yes/protected-mode no/\" /etc/redis/redis.conf",
-            "systemctl restart redis-server"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
-        echo "Redis configured"
-
     - name: Install Certbot
       run: |
         echo "Installing Certbot..."
