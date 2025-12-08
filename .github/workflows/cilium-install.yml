@@ -136,7 +136,7 @@ jobs:
             "echo \"Checking Cilium pods...\"",
             "sudo k3s kubectl get pods -n kube-system -l k8s-app=cilium -o wide",
             "echo \"Checking Cilium status...\"",
-            "cilium status",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium status",
             "echo \"Checking cluster connectivity...\"",
             "sudo k3s kubectl get nodes -o wide",
             "echo \"Cilium verification completed\""
