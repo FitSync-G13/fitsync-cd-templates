@@ -297,13 +297,15 @@ jobs:
             \"mkdir -p /etc/redis/certs\",
             \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /etc/redis/certs/server.crt\",
             \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /etc/redis/certs/server.key\",
+            \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/chain.pem /etc/redis/certs/ca.crt\",
             \"chown redis:redis /etc/redis/certs/*\",
             \"chmod 600 /etc/redis/certs/server.key\",
             \"grep -q '^port 0' /etc/redis/redis.conf || sed -i 's/^port 6379/port 0/' /etc/redis/redis.conf\",
             \"grep -q '^tls-port' /etc/redis/redis.conf || echo 'tls-port 6379' >> /etc/redis/redis.conf\",
             \"grep -q '^tls-cert-file' /etc/redis/redis.conf || echo 'tls-cert-file /etc/redis/certs/server.crt' >> /etc/redis/redis.conf\",
             \"grep -q '^tls-key-file' /etc/redis/redis.conf || echo 'tls-key-file /etc/redis/certs/server.key' >> /etc/redis/redis.conf\",
-            \"grep -q '^tls-ca-cert-file' /etc/redis/redis.conf || echo 'tls-ca-cert-file /etc/redis/certs/server.crt' >> /etc/redis/redis.conf\",
+            \"grep -q '^tls-ca-cert-file' /etc/redis/redis.conf || echo 'tls-ca-cert-file /etc/redis/certs/ca.crt' >> /etc/redis/redis.conf\",
+            \"grep -q '^tls-auth-clients no' /etc/redis/redis.conf || echo 'tls-auth-clients no' >> /etc/redis/redis.conf\",
             \"systemctl restart redis-server\"
           ]" \
           --output text \
@@ -330,6 +332,7 @@ jobs:
             \"echo 'chmod 600 /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
             \"echo 'cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /etc/redis/certs/server.crt' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
             \"echo 'cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /etc/redis/certs/server.key' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/chain.pem /etc/redis/certs/ca.crt' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
             \"echo 'chown redis:redis /etc/redis/certs/*' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
             \"echo 'chmod 600 /etc/redis/certs/server.key' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
             \"echo 'systemctl restart postgresql' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
@@ -376,7 +379,7 @@ jobs:
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "systemctl status redis-server --no-pager || true",
-            "redis-cli --tls --cert /etc/redis/certs/server.crt --key /etc/redis/certs/server.key --cacert /etc/redis/certs/server.crt ping || true"
+            "redis-cli --tls --cert /etc/redis/certs/server.crt --key /etc/redis/certs/server.key --cacert /etc/redis/certs/ca.crt ping || true"
           ]' \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
@@ -403,8 +406,8 @@ jobs:
             \"nc -zv localhost 6379 || echo 'Redis port check failed'\",
             \"ss -tlnp | grep -E ':(5432|6379)' || true\",
             \"sudo -u postgres psql -c 'SELECT 1;' || echo 'PostgreSQL query failed'\",
-            \"redis-cli --tls --cert /etc/redis/certs/server.crt --key /etc/redis/certs/server.key --cacert /etc/redis/certs/server.crt SET test_key test_value || echo 'Redis SET failed'\",
-            \"redis-cli --tls --cert /etc/redis/certs/server.crt --key /etc/redis/certs/server.key --cacert /etc/redis/certs/server.crt GET test_key || echo 'Redis GET failed'\"
+            \"redis-cli --tls --cert /etc/redis/certs/server.crt --key /etc/redis/certs/server.key --cacert /etc/redis/certs/ca.crt SET test_key test_value || echo 'Redis SET failed'\",
+            \"redis-cli --tls --cert /etc/redis/certs/server.crt --key /etc/redis/certs/server.key --cacert /etc/redis/certs/ca.crt GET test_key || echo 'Redis GET failed'\"
           ]" \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
