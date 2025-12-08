@@ -177,6 +177,7 @@ jobs:
 
   install-k3s-workers:
     if: ${{ inputs.install_workers }}
+    needs: install-k3s-masters
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     
@@ -283,6 +284,7 @@ jobs:
 
   verify-cluster:
     if: ${{ inputs.verify_cluster }}
+    needs: [install-k3s-masters, install-k3s-workers]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     
