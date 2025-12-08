@@ -300,12 +300,12 @@ jobs:
             \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/chain.pem /etc/redis/certs/ca.crt\",
             \"chown redis:redis /etc/redis/certs/*\",
             \"chmod 600 /etc/redis/certs/server.key\",
-            \"grep -q '^port 0' /etc/redis/redis.conf || sed -i 's/^port 6379/port 0/' /etc/redis/redis.conf\",
-            \"grep -q '^tls-port' /etc/redis/redis.conf || echo 'tls-port 6379' >> /etc/redis/redis.conf\",
-            \"grep -q '^tls-cert-file' /etc/redis/redis.conf || echo 'tls-cert-file /etc/redis/certs/server.crt' >> /etc/redis/redis.conf\",
-            \"grep -q '^tls-key-file' /etc/redis/redis.conf || echo 'tls-key-file /etc/redis/certs/server.key' >> /etc/redis/redis.conf\",
-            \"grep -q '^tls-ca-cert-file' /etc/redis/redis.conf || echo 'tls-ca-cert-file /etc/redis/certs/ca.crt' >> /etc/redis/redis.conf\",
-            \"grep -q '^tls-auth-clients no' /etc/redis/redis.conf || echo 'tls-auth-clients no' >> /etc/redis/redis.conf\",
+            \"sed -i 's/^port 6379/port 0/' /etc/redis/redis.conf\",
+            \"sed -i '/^tls-port/d' /etc/redis/redis.conf && echo 'tls-port 6379' >> /etc/redis/redis.conf\",
+            \"sed -i '/^tls-cert-file/d' /etc/redis/redis.conf && echo 'tls-cert-file /etc/redis/certs/server.crt' >> /etc/redis/redis.conf\",
+            \"sed -i '/^tls-key-file/d' /etc/redis/redis.conf && echo 'tls-key-file /etc/redis/certs/server.key' >> /etc/redis/redis.conf\",
+            \"sed -i '/^tls-ca-cert-file/d' /etc/redis/redis.conf && echo 'tls-ca-cert-file /etc/redis/certs/ca.crt' >> /etc/redis/redis.conf\",
+            \"sed -i '/^tls-auth-clients/d' /etc/redis/redis.conf && echo 'tls-auth-clients no' >> /etc/redis/redis.conf\",
             \"systemctl restart redis-server\"
           ]" \
           --output text \
