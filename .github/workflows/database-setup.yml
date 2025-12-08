@@ -207,7 +207,6 @@ jobs:
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
-            "if command -v certbot &> /dev/null; then echo \"Certbot already installed\"; exit 0; fi",
             "apt install -y certbot python3-certbot-dns-cloudflare"
           ]' \
           --output text \
