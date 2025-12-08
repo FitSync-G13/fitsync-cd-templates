@@ -54,24 +54,16 @@ jobs:
         DOMAIN_NAME="${{ inputs.domain_name }}"
         SUBDOMAIN_PREFIX="${{ inputs.subdomain_prefix }}"
         
-        if [ -n "$DOMAIN_NAME" ]; then
-          if [ -z "$SUBDOMAIN_PREFIX" ]; then
-            ENV_NAME="${{ inputs.environment }}"
-            GATEWAY_NAME="${ENV_NAME}-gateway"
-            HOST="$DOMAIN_NAME"
-          else
-            GATEWAY_NAME="$SUBDOMAIN_PREFIX-gateway"
-            HOST="$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
-          fi
-        else
+        # Gateway name must match what gateway workflow creates
+        if [ -z "$SUBDOMAIN_PREFIX" ]; then
           ENV_NAME="${{ inputs.environment }}"
           GATEWAY_NAME="${ENV_NAME}-gateway"
-          HOST="*"
+        else
+          GATEWAY_NAME="$SUBDOMAIN_PREFIX-gateway"
         fi
         
         echo "Deploying Bookinfo sample app"
         echo "Gateway: $GATEWAY_NAME"
-        echo "Host: $HOST"
         
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
