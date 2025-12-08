@@ -320,12 +320,22 @@ jobs:
         aws ssm send-command \
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
           --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "mkdir -p /etc/letsencrypt/renewal-hooks/deploy",
-            "if [ -f /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh ]; then exit 0; fi",
-            "cat > /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh << '\''EOF'\''\n#!/bin/bash\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.crt\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key\nchown postgres:postgres /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.*\nchmod 600 /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /etc/redis/certs/server.crt\ncp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /etc/redis/certs/server.key\nchown redis:redis /etc/redis/certs/*\nchmod 600 /etc/redis/certs/server.key\nsystemctl restart postgresql\nsystemctl restart redis-server\nEOF",
-            "chmod +x /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh"
-          ]' \
+          --parameters commands="[
+            \"mkdir -p /etc/letsencrypt/renewal-hooks/deploy\",
+            \"if [ -f /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh ]; then exit 0; fi\",
+            \"echo '#!/bin/bash' > /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.crt' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'chown postgres:postgres /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.*' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'chmod 600 /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /etc/redis/certs/server.crt' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /etc/redis/certs/server.key' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'chown redis:redis /etc/redis/certs/*' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'chmod 600 /etc/redis/certs/server.key' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'systemctl restart postgresql' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"echo 'systemctl restart redis-server' >> /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\",
+            \"chmod +x /etc/letsencrypt/renewal-hooks/deploy/restart-services.sh\"
+          ]" \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
         
