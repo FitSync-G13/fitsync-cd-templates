@@ -54,13 +54,8 @@ jobs:
         DOMAIN_NAME="${{ inputs.domain_name }}"
         SUBDOMAIN_PREFIX="${{ inputs.subdomain_prefix }}"
         
-        # Gateway name must match what gateway workflow creates
-        if [ -z "$SUBDOMAIN_PREFIX" ]; then
-          ENV_NAME="${{ inputs.environment }}"
-          GATEWAY_NAME="${ENV_NAME}-gateway"
-        else
-          GATEWAY_NAME="$SUBDOMAIN_PREFIX-gateway"
-        fi
+        # Gateway name always uses environment
+        GATEWAY_NAME="${{ inputs.environment }}-gateway"
         
         echo "Deploying Bookinfo sample app"
         echo "Gateway: $GATEWAY_NAME"

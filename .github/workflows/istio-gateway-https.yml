@@ -70,23 +70,19 @@ jobs:
         fi
         
         if [ -z "$SUBDOMAIN_PREFIX" ]; then
-          ENV_NAME="${{ inputs.environment }}"
-          CERT_NAME="${ENV_NAME}-wildcard-cert"
-          GATEWAY_NAME="${ENV_NAME}-gateway"
+          CERT_NAME="${{ inputs.environment }}-wildcard-cert"
           HOST_PATTERN="*.$DOMAIN_NAME"
           ROOT_HOST="$DOMAIN_NAME"
         else
           CERT_NAME="$SUBDOMAIN_PREFIX-wildcard-cert"
-          GATEWAY_NAME="$SUBDOMAIN_PREFIX-gateway"
           HOST_PATTERN="*.$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
           ROOT_HOST="$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
         fi
         
-        # Use both Cloudflare domain and ALB DNS for Gateway hosts
-        ALB_DNS="${{ vars.ALB_DNS_NAME }}"
+        # Gateway name always uses environment
+        GATEWAY_NAME="${{ inputs.environment }}-gateway"
         
         echo "Deploying Gateway: $GATEWAY_NAME"
-        echo "Hosts: $HOST_PATTERN, $ROOT_HOST, $ALB_DNS"
         echo "Certificate: $CERT_NAME"
         
         COMMAND_ID=$(aws ssm send-command \
