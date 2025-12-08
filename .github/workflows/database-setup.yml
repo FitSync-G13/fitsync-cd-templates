@@ -302,10 +302,8 @@ jobs:
             \"chmod 600 /etc/redis/certs/server.key\",
             \"sed -i 's/^port 6379/port 0/' /etc/redis/redis.conf\",
             \"sed -i '/^tls-/d' /etc/redis/redis.conf\",
-            \"cat >> /etc/redis/redis.conf << 'EOFREDIS'\ntls-port 6379\ntls-cert-file /etc/redis/certs/server.crt\ntls-key-file /etc/redis/certs/server.key\ntls-ca-cert-file /etc/redis/certs/ca.crt\ntls-auth-clients no\nEOFREDIS\",
-            \"systemctl restart redis-server\",
-            \"sleep 2\",
-            \"systemctl status redis-server\"
+            \"printf 'tls-port 6379\\ntls-cert-file /etc/redis/certs/server.crt\\ntls-key-file /etc/redis/certs/server.key\\ntls-ca-cert-file /etc/redis/certs/ca.crt\\ntls-auth-clients no\\n' >> /etc/redis/redis.conf\",
+            \"systemctl restart redis-server\"
           ]" \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
