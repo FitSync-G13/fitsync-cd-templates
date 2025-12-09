@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: 'prometheus.obs.fitsync.online'
+      opensearch_host:
+        description: 'OpenSearch API host (e.g., opensearch-api.obs.fitsync.online)'
+        required: false
+        type: string
+        default: 'opensearch-api.obs.fitsync.online'
       osd_host:
         description: 'OpenSearch Dashboards host (e.g., osd.obs.fitsync.online)'
         required: false
@@ -67,11 +72,13 @@ jobs:
       env:
         GRAFANA_HOST: ${{ inputs.grafana_host }}
         PROM_HOST: ${{ inputs.prometheus_host }}
+        OS_HOST: ${{ inputs.opensearch_host }}
         OSD_HOST: ${{ inputs.osd_host }}
         ADMIN_PW: ${{ inputs.admin_password }}
         INGRESS_CLASS: ${{ inputs.ingress_class }}
         GRAFANA_HOST_VAR: ${{ vars.GRAFANA_HOST }}
         PROM_HOST_VAR: ${{ vars.PROMETHEUS_HOST }}
+        OS_HOST_VAR: ${{ vars.OPENSEARCH_HOST }}
         OSD_HOST_VAR: ${{ vars.OSD_HOST }}
         ADMIN_PW_VAR: ${{ vars.OBS_ADMIN_PASSWORD }}
         INGRESS_CLASS_VAR: ${{ vars.OBS_INGRESS_CLASS }}
@@ -80,6 +87,7 @@ jobs:
         FIRST_OBSERVE=$(echo $OBSERVE_INSTANCES | cut -d',' -f1)
         GRAFANA_HOST="${GRAFANA_HOST:-${GRAFANA_HOST_VAR:-grafana.obs.fitsync.online}}"
         PROM_HOST="${PROM_HOST:-${PROM_HOST_VAR:-prometheus.obs.fitsync.online}}"
+        OS_HOST="${OS_HOST:-${OS_HOST_VAR:-opensearch-api.obs.fitsync.online}}"
         OSD_HOST="${OSD_HOST:-${OSD_HOST_VAR:-osd.obs.fitsync.online}}"
         ADMIN_PW="${ADMIN_PW:-${ADMIN_PW_VAR:-changeme-strong}}"
         INGRESS_CLASS="${INGRESS_CLASS:-${INGRESS_CLASS_VAR:-nginx}}"
@@ -174,25 +182,22 @@ jobs:
             \"  adminPassword: \\\"$ADMIN_PW\\\"\",
             \"\",
             \"service:\",
-            \"  type: LoadBalancer\",
-            \"  annotations:\",
-            \"    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing\",
-            \"    service.beta.kubernetes.io/aws-load-balancer-type: \\\"nlb\\\"\",
-            \"    service.beta.kubernetes.io/aws-load-balancer-attributes: idle_timeout.timeout_seconds=120\",
+            \"  type: ClusterIP\",
             \"\",
             \"ingress:\",
             \"  enabled: true\",
             \"  annotations:\",
             \"    kubernetes.io/ingress.class: $INGRESS_CLASS\",
+            \"    nginx.ingress.kubernetes.io/backend-protocol: HTTP\",
             \"  hosts:\",
-            \"    - host: \\\"$OSD_HOST\\\"\",
+            \"    - host: \\\"$OS_HOST\\\"\",
             \"      paths:\",
             \"        - path: /\",
             \"          pathType: Prefix\",
             \"  tls:\",
             \"    - hosts:\",
-            \"        - \\\"$OSD_HOST\\\"\",
-            \"      secretName: opensearch-dashboards-tls\",
+            \"        - \\\"$OS_HOST\\\"\",
+            \"      secretName: opensearch-api-tls\",
             \"\",
             \"dashboards:\",
             \"  enabled: true\",
