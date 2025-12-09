@@ -11,6 +11,31 @@ on:
         description: 'Comma-separated list of observe instance IDs'
         required: true
         type: string
+      grafana_host:
+        description: 'Grafana host (e.g., grafana.obs.fitsync.online)'
+        required: false
+        type: string
+        default: 'grafana.obs.fitsync.online'
+      prometheus_host:
+        description: 'Prometheus host (e.g., prometheus.obs.fitsync.online)'
+        required: false
+        type: string
+        default: 'prometheus.obs.fitsync.online'
+      osd_host:
+        description: 'OpenSearch Dashboards host (e.g., osd.obs.fitsync.online)'
+        required: false
+        type: string
+        default: 'osd.obs.fitsync.online'
+      admin_password:
+        description: 'Admin password for Grafana and OpenSearch security plugin'
+        required: false
+        type: string
+        default: 'changeme-strong'
+      ingress_class:
+        description: 'Ingress class annotation (e.g., nginx, istio)'
+        required: false
+        type: string
+        default: 'nginx'
       environment:
         description: 'GitHub environment name'
         required: false
@@ -39,75 +64,182 @@ jobs:
         role-session-name: GitHubActions-Istio-SampleApp
 
     - name: Install Observability Stack
+      env:
+        GRAFANA_HOST: ${{ inputs.grafana_host }}
+        PROM_HOST: ${{ inputs.prometheus_host }}
+        OSD_HOST: ${{ inputs.osd_host }}
+        ADMIN_PW: ${{ inputs.admin_password }}
+        INGRESS_CLASS: ${{ inputs.ingress_class }}
+        GRAFANA_HOST_VAR: ${{ vars.GRAFANA_HOST }}
+        PROM_HOST_VAR: ${{ vars.PROMETHEUS_HOST }}
+        OSD_HOST_VAR: ${{ vars.OSD_HOST }}
+        ADMIN_PW_VAR: ${{ vars.OBS_ADMIN_PASSWORD }}
+        INGRESS_CLASS_VAR: ${{ vars.OBS_INGRESS_CLASS }}
       run: |
         OBSERVE_INSTANCES="${{ inputs.observe_instances }}"
         FIRST_OBSERVE=$(echo $OBSERVE_INSTANCES | cut -d',' -f1)
+        GRAFANA_HOST="${GRAFANA_HOST:-${GRAFANA_HOST_VAR:-grafana.obs.fitsync.online}}"
+        PROM_HOST="${PROM_HOST:-${PROM_HOST_VAR:-prometheus.obs.fitsync.online}}"
+        OSD_HOST="${OSD_HOST:-${OSD_HOST_VAR:-osd.obs.fitsync.online}}"
+        ADMIN_PW="${ADMIN_PW:-${ADMIN_PW_VAR:-changeme-strong}}"
+        INGRESS_CLASS="${INGRESS_CLASS:-${INGRESS_CLASS_VAR:-nginx}}"
         
         echo "Installing Observability Stack"
         echo "Observe instances: $OBSERVE_INSTANCES"
         echo "Using first observe instance: $FIRST_OBSERVE"
-        
-        # COMMAND_ID=$(aws ssm send-command \
-        #   --instance-ids "$FIRST_MASTER" \
-        #   --document-name "AWS-RunShellScript" \
-        #   --timeout-seconds 600 \
-        #   --parameters "commands=[
-        #     \"echo Deploying Bookinfo application...\",
-        #     \"bash -c 'cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml'\",
-        #     \"echo Waiting for pods...\",
-        #     \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=ready pod -l app=productpage --timeout=300s\",
-        #     \"echo Applying VirtualService for host ${HOST}...\",
-        #     \"echo apiVersion: networking.istio.io/v1beta1 > /tmp/bookinfo-vs.yaml\",
-        #     \"echo kind: VirtualService >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo metadata: >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '  name: bookinfo' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo spec: >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '  hosts:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '  - \\\"*\\\"' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '  gateways:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '  - istio-system/${GATEWAY_NAME}' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '  http:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '  - match:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '        exact: /' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    rewrite:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '      uri: /productpage' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    route:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    - destination:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '        host: productpage' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '        port:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '          number: 9080' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '  - match:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '        exact: /productpage' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '        prefix: /static' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '        exact: /login' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '        exact: /logout' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    - uri:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '        prefix: /api/v1/products' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    route:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '    - destination:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '        host: productpage' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '        port:' >> /tmp/bookinfo-vs.yaml\",
-        #     \"echo '          number: 9080' >> /tmp/bookinfo-vs.yaml\",
-        #     \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f /tmp/bookinfo-vs.yaml\",
-        #     \"rm /tmp/bookinfo-vs.yaml\",
-        #     \"echo Applying destination rules...\",
-        #     \"bash -c 'cd /tmp/istio-* && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f samples/bookinfo/networking/destination-rule-all.yaml'\",
-        #     \"echo Deployment completed\"
-        #   ]" \
-        #   --query 'Command.CommandId' \
-        #   --output text)
-        
-        # echo "Command ID: $COMMAND_ID"
-        # sleep 30
-        
-        # aws ssm get-command-invocation \
-        #   --command-id "$COMMAND_ID" \
-        #   --instance-id "$FIRST_MASTER" \
-        #   --query 'StandardOutputContent' \
-        #   --output text
+        echo "Grafana host: $GRAFANA_HOST"
+        echo "Prometheus host: $PROM_HOST"
+        echo "OpenSearch Dashboards host: $OSD_HOST"
+
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_OBSERVE" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 1200 \
+          --parameters "commands=[
+            \"set -e\",
+            \"echo 'Setting up observability stack' \",
+            \"sudo apt-get update && sudo apt-get install -y curl unzip jq\",
+            \"if ! command -v helm >/dev/null 2>&1; then curl -fsSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash; fi\",
+            \"mkdir -p /tmp/obs && cd /tmp/obs\",
+            \"cat <<'EOF' > kube-prom-values.yaml\",
+            \"global:\",
+            \"  scrape_interval: 30s\",
+            \"alertmanager:\",
+            \"  enabled: false\",
+            \"grafana:\",
+            \"  enabled: true\",
+            \"  adminPassword: \\\"$ADMIN_PW\\\"\",
+            \"  ingress:\",
+            \"    enabled: true\",
+            \"    annotations:\",
+            \"      kubernetes.io/ingress.class: $INGRESS_CLASS\",
+            \"    hosts:\",
+            \"      - \\\"$GRAFANA_HOST\\\"\",
+            \"    tls:\",
+            \"      - secretName: grafana-tls\",
+            \"        hosts:\",
+            \"          - \\\"$GRAFANA_HOST\\\"\",
+            \"prometheusOperator:\",
+            \"  enabled: true\",
+            \"prometheus:\",
+            \"  ingress:\",
+            \"    enabled: true\",
+            \"    annotations:\",
+            \"      kubernetes.io/ingress.class: $INGRESS_CLASS\",
+            \"    hosts:\",
+            \"      - \\\"$PROM_HOST\\\"\",
+            \"    tls:\",
+            \"      - secretName: prometheus-tls\",
+            \"        hosts:\",
+            \"          - \\\"$PROM_HOST\\\"\",
+            \"  service:\",
+            \"    type: LoadBalancer\",
+            \"    annotations:\",
+            \"      service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing\",
+            \"      service.beta.kubernetes.io/aws-load-balancer-type: \\\"nlb\\\"\",
+            \"      service.beta.kubernetes.io/aws-load-balancer-attributes: idle_timeout.timeout_seconds=120\",
+            \"  prometheusSpec:\",
+            \"    enableRemoteWriteReceiver: true\",
+            \"    retention: 15d\",
+            \"    resources:\",
+            \"      requests:\",
+            \"        cpu: 500m\",
+            \"        memory: 2Gi\",
+            \"    storageSpec: {}\",
+            \"    podMonitorSelectorNilUsesHelmValues: false\",
+            \"    serviceMonitorSelectorNilUsesHelmValues: false\",
+            \"    ruleSelectorNilUsesHelmValues: false\",
+            \"    additionalScrapeConfigs: []\",
+            \"kube-state-metrics:\",
+            \"  enabled: true\",
+            \"nodeExporter:\",
+            \"  enabled: true\",
+            \"EOF\",
+            \"cat <<'EOF' > opensearch-values.yaml\",
+            \"singleNode: true\",
+            \"clusterName: obs-opensearch\",
+            \"\",
+            \"replicas: 1\",
+            \"persistence:\",
+            \"  enabled: false\",
+            \"\",
+            \"extraEnvs:\",
+            \"  - name: DISABLE_INSTALL_DEMO_CONFIG\",
+            \"    value: \\\"true\\\"\",
+            \"  - name: DISABLE_SECURITY_PLUGIN\",
+            \"    value: \\\"false\\\"\",
+            \"\",
+            \"securityConfig:\",
+            \"  enabled: true\",
+            \"  adminPassword: \\\"$ADMIN_PW\\\"\",
+            \"\",
+            \"service:\",
+            \"  type: LoadBalancer\",
+            \"  annotations:\",
+            \"    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing\",
+            \"    service.beta.kubernetes.io/aws-load-balancer-type: \\\"nlb\\\"\",
+            \"    service.beta.kubernetes.io/aws-load-balancer-attributes: idle_timeout.timeout_seconds=120\",
+            \"\",
+            \"ingress:\",
+            \"  enabled: true\",
+            \"  annotations:\",
+            \"    kubernetes.io/ingress.class: $INGRESS_CLASS\",
+            \"  hosts:\",
+            \"    - host: \\\"$OSD_HOST\\\"\",
+            \"      paths:\",
+            \"        - path: /\",
+            \"          pathType: Prefix\",
+            \"  tls:\",
+            \"    - hosts:\",
+            \"        - \\\"$OSD_HOST\\\"\",
+            \"      secretName: opensearch-dashboards-tls\",
+            \"\",
+            \"dashboards:\",
+            \"  enabled: true\",
+            \"  replicaCount: 1\",
+            \"  service:\",
+            \"    type: ClusterIP\",
+            \"  ingress:\",
+            \"    enabled: true\",
+            \"    annotations:\",
+            \"      kubernetes.io/ingress.class: $INGRESS_CLASS\",
+            \"    hosts:\",
+            \"      - host: \\\"$OSD_HOST\\\"\",
+            \"        paths:\",
+            \"          - path: /\",
+            \"            pathType: Prefix\",
+            \"    tls:\",
+            \"      - hosts:\",
+            \"          - \\\"$OSD_HOST\\\"\",
+            \"        secretName: opensearch-dashboards-tls\",
+            \"  opensearchDashboardsConfig:\",
+            \"    opensearchDashboards.yml: |\",
+            \"      server.host: \\\"0.0.0.0\\\"\",
+            \"      opensearch.hosts: [\\\"https://opensearch-cluster-master:9200\\\"]\",
+            \"      opensearch.ssl.verificationMode: full\",
+            \"      server.ssl.enabled: true\",
+            \"      server.ssl.certificate: /usr/share/opensearch-dashboards/config/tls/tls.crt\",
+            \"      server.ssl.key: /usr/share/opensearch-dashboards/config/tls/tls.key\",
+            \"EOF\",
+            \"echo 'Deploying kube-prometheus-stack'\", 
+            \"helm repo add prometheus-community https://prometheus-community.github.io/helm-charts\",
+            \"helm repo add opensearch https://opensearch-project.github.io/helm-charts\",
+            \"helm repo update\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl create namespace observability --dry-run=client -o yaml | sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -f -\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade --install kube-prom-stack prometheus-community/kube-prometheus-stack -n observability -f /tmp/obs/kube-prom-values.yaml\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade --install opensearch opensearch/opensearch -n observability -f /tmp/obs/opensearch-values.yaml\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade --install opensearch-dashboards opensearch/opensearch-dashboards -n observability -f /tmp/obs/opensearch-values.yaml\",
+            \"echo 'Observability stack deployment triggered'\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+
+        echo "Command ID: $COMMAND_ID"
+        sleep 30
+
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_OBSERVE" \
+          --query 'StandardOutputContent' \
+          --output text
 
