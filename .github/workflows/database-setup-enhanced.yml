@@ -177,34 +177,91 @@ jobs:
           echo "Status: $STATUS ($i/60)"
           sleep 5
         done
-    - name: Generate database credentials and create databases
+    - name: Check existing databases and generate credentials
       id: create-dbs
       run: |
-        echo "Creating databases and users..."
+        echo "Checking existing databases and generating credentials if needed..."
         
         # Convert comma-separated database names to array
         IFS=',' read -ra DB_NAMES <<< "${{ inputs.database_names }}"
         
-        # Generate credentials for each database
+        # Check which databases already exist
+        EXISTING_DBS=$(aws ssm send-command \
+          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=["sudo -u postgres psql -t -c \"SELECT datname FROM pg_database WHERE datname NOT IN ('"'"'postgres'"'"', '"'"'template0'"'"', '"'"'template1'"'"');\""]' \
+          --output text \
+          --query "Command.CommandId")
+        
+        # Wait for command and get results
+        sleep 5
+        EXISTING_DB_LIST=$(aws ssm get-command-invocation \
+          --command-id $EXISTING_DBS \
+          --instance-id ${{ steps.get-db.outputs.instance_id }} \
+          --query 'StandardOutputContent' \
+          --output text | tr -d ' ')
+        
+        echo "Existing databases: $EXISTING_DB_LIST"
+        
+        # Generate credentials for databases that don't exist
         DB_CREDENTIALS=""
+        DATABASES_TO_CREATE=""
+        SKIP_DB_CREATION=true
+        
         for db_name in "${DB_NAMES[@]}"; do
-          # Generate random username (pet name without special chars)
-          username=$(echo "${db_name}_$(openssl rand -hex 4)" | tr '[:upper:]' '[:lower:]')
-          # Generate random password (alphanumeric only)
-          password=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+          if echo "$EXISTING_DB_LIST" | grep -q "^${db_name}$"; then
+            echo "Database ${db_name} already exists - skipping"
+          else
+            echo "Database ${db_name} needs to be created"
+            SKIP_DB_CREATION=false
+            
+            # Generate random username and password
+            username=$(echo "${db_name}_$(openssl rand -hex 4)" | tr '[:upper:]' '[:lower:]')
+            password=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+            
+            DB_CREDENTIALS="${DB_CREDENTIALS}${db_name}:${username}:${password},"
+            DATABASES_TO_CREATE="${DATABASES_TO_CREATE}${db_name},"
+            echo "Generated credentials for ${db_name}"
+          fi
+        done
+        
+        # Remove trailing commas
+        DB_CREDENTIALS=${DB_CREDENTIALS%,}
+        DATABASES_TO_CREATE=${DATABASES_TO_CREATE%,}
+        
+        echo "db_credentials=$DB_CREDENTIALS" >> $GITHUB_OUTPUT
+        echo "databases_to_create=$DATABASES_TO_CREATE" >> $GITHUB_OUTPUT
+        echo "skip_db_creation=$SKIP_DB_CREATION" >> $GITHUB_OUTPUT
+        
+        if [ "$SKIP_DB_CREATION" = "true" ]; then
+          echo "All databases already exist - skipping database creation"
+        else
+          echo "Will create databases: $DATABASES_TO_CREATE"
+        fi
+
+    - name: Create new databases
+      if: steps.create-dbs.outputs.skip_db_creation == 'false'
+      run: |
+        echo "Creating new databases..."
+        
+        # Convert databases to create into array
+        IFS=',' read -ra DBS_TO_CREATE <<< "${{ steps.create-dbs.outputs.databases_to_create }}"
+        IFS=',' read -ra CREDS <<< "${{ steps.create-dbs.outputs.db_credentials }}"
+        
+        for cred in "${CREDS[@]}"; do
+          IFS=':' read -ra PARTS <<< "$cred"
+          db_name="${PARTS[0]}"
+          username="${PARTS[1]}"
+          password="${PARTS[2]}"
           
-          DB_CREDENTIALS="${DB_CREDENTIALS}${db_name}:${username}:${password},"
-          echo "Generated credentials for ${db_name}"
-          
-          # Create each database individually
           echo "Creating database: ${db_name}"
           
           aws ssm send-command \
             --instance-ids ${{ steps.get-db.outputs.instance_id }} \
             --document-name "AWS-RunShellScript" \
             --parameters commands="[
-              \"sudo -u postgres createdb ${db_name} || echo 'Database ${db_name} may already exist'\",
-              \"sudo -u postgres psql -c \\\"CREATE USER ${username} WITH PASSWORD '${password}';\\\" || echo 'User may already exist'\",
+              \"sudo -u postgres createdb ${db_name}\",
+              \"sudo -u postgres psql -c \\\"CREATE USER ${username} WITH PASSWORD '${password}';\\\"\",
               \"sudo -u postgres psql -c \\\"GRANT ALL PRIVILEGES ON DATABASE ${db_name} TO ${username};\\\"\",
               \"sudo -u postgres psql -d ${db_name} -c \\\"GRANT ALL ON SCHEMA public TO ${username};\\\"\",
               \"sudo -u postgres psql -d ${db_name} -c \\\"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${username};\\\"\",
@@ -244,10 +301,7 @@ jobs:
           done
         done
         
-        # Remove trailing comma
-        DB_CREDENTIALS=${DB_CREDENTIALS%,}
-        echo "db_credentials=$DB_CREDENTIALS" >> $GITHUB_OUTPUT
-        echo "All databases created successfully"
+        echo "All new databases created successfully"
     - name: Configure PostgreSQL
       run: |
         echo "Configuring PostgreSQL..."
@@ -403,13 +457,14 @@ jobs:
         echo "TLS configured for PostgreSQL and Redis"
 
     - name: Store database connection strings in AWS Secrets Manager
+      if: steps.create-dbs.outputs.skip_db_creation == 'false'
       run: |
         echo "Storing database connection strings in AWS Secrets Manager..."
         
-        # Parse database credentials
+        # Parse database credentials for newly created databases
         IFS=',' read -ra CREDS <<< "${{ steps.create-dbs.outputs.db_credentials }}"
         
-        # Create connection strings for each database
+        # Create connection strings for each new database
         for cred in "${CREDS[@]}"; do
           IFS=':' read -ra PARTS <<< "$cred"
           db_name="${PARTS[0]}"
@@ -424,21 +479,16 @@ jobs:
           
           echo "Creating secret: $secret_name"
           
-          # Create or update secret
+          # Create secret (will fail if exists, which is fine)
           aws secretsmanager create-secret \
             --name "$secret_name" \
             --description "Database connection string for ${db_name} in ${{ inputs.environment }}" \
             --secret-string "$pg_connection_string" \
             --tags '[{"Key":"Project","Value":"${{ vars.PROJECT_NAME }}"},{"Key":"Environment","Value":"${{ inputs.environment }}"},{"Key":"Service","Value":"'${db_name}'"}]' \
-            2>/dev/null || \
-          aws secretsmanager update-secret \
-            --secret-id "$secret_name" \
-            --secret-string "$pg_connection_string"
-          
-          echo "✅ Created secret for ${db_name}: $secret_name"
+            2>/dev/null && echo "✅ Created secret for ${db_name}: $secret_name" || echo "ℹ️  Secret for ${db_name} may already exist"
         done
         
-        # Create Redis connection string
+        # Create Redis connection string (only if not exists)
         redis_connection_string="redis://${{ vars.DB_PRIVATE_DNS }}:6379?tls=true"
         redis_secret_name="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/redis-url"
         
@@ -449,12 +499,34 @@ jobs:
           --description "Redis connection string for ${{ inputs.environment }}" \
           --secret-string "$redis_connection_string" \
           --tags '[{"Key":"Project","Value":"${{ vars.PROJECT_NAME }}"},{"Key":"Environment","Value":"${{ inputs.environment }}"},{"Key":"Service","Value":"redis"}]' \
-          2>/dev/null || \
-        aws secretsmanager update-secret \
-          --secret-id "$redis_secret_name" \
-          --secret-string "$redis_connection_string"
+          2>/dev/null && echo "✅ Created Redis secret: $redis_secret_name" || echo "ℹ️  Redis secret may already exist"
+
+    - name: Check existing secrets status
+      if: steps.create-dbs.outputs.skip_db_creation == 'true'
+      run: |
+        echo "All databases already exist - checking if secrets are also present..."
         
-        echo "✅ Created Redis secret: $redis_secret_name"
+        # Convert comma-separated database names to array
+        IFS=',' read -ra DB_NAMES <<< "${{ inputs.database_names }}"
+        
+        # Check each database secret
+        for db_name in "${DB_NAMES[@]}"; do
+          secret_name="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/${db_name}-db-url"
+          
+          if aws secretsmanager describe-secret --secret-id "$secret_name" >/dev/null 2>&1; then
+            echo "✅ Secret exists for ${db_name}: $secret_name"
+          else
+            echo "⚠️  Secret missing for ${db_name}: $secret_name"
+          fi
+        done
+        
+        # Check Redis secret
+        redis_secret_name="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/redis-url"
+        if aws secretsmanager describe-secret --secret-id "$redis_secret_name" >/dev/null 2>&1; then
+          echo "✅ Redis secret exists: $redis_secret_name"
+        else
+          echo "⚠️  Redis secret missing: $redis_secret_name"
+        fi
 
     - name: Setup certificate auto-renewal
       run: |
@@ -530,11 +602,19 @@ jobs:
         echo "TLS: Enabled"
         echo "Data Directory: /mnt/data"
         echo ""
-        echo "Created databases:"
+        echo "Requested databases:"
         IFS=',' read -ra DB_NAMES <<< "${{ inputs.database_names }}"
         for db_name in "${DB_NAMES[@]}"; do
           echo "  - ${db_name}"
         done
+        echo ""
+        if [ "${{ steps.create-dbs.outputs.skip_db_creation }}" = "true" ]; then
+          echo "Status: All databases already existed - no new databases created"
+          echo "Action: Verified existing database and secret configuration"
+        else
+          echo "Status: Created new databases and stored credentials"
+          echo "New databases: ${{ steps.create-dbs.outputs.databases_to_create }}"
+        fi
         echo ""
         echo "Secrets stored in AWS Secrets Manager:"
         echo "  Pattern: ${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/{service}-db-url"
