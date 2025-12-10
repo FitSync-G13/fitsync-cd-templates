@@ -353,9 +353,7 @@ jobs:
             "systemctl stop redis-server",
             "mkdir -p /mnt/data/redis",
             "chown redis:redis /mnt/data/redis",
-            "sed -i \\\"s|^dir .*|dir /mnt/data/redis|\\\" /etc/redis/redis.conf",
-            "sed -i \\\"s/^save/#save/g\\\" /etc/redis/redis.conf",
-            "echo 'save \\\"\\\"' >> /etc/redis/redis.conf",
+            "sed -i \"s|^dir .*|dir /mnt/data/redis|\" /etc/redis/redis.conf",
             "systemctl enable redis-server",
             "systemctl start redis-server"
           ]' \
