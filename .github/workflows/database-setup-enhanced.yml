@@ -354,8 +354,6 @@ jobs:
             "mkdir -p /mnt/data/redis",
             "chown redis:redis /mnt/data/redis",
             "sed -i \"s|^dir .*|dir /mnt/data/redis|\" /etc/redis/redis.conf",
-            "sysctl vm.overcommit_memory=1",
-            "echo 'vm.overcommit_memory = 1' >> /etc/sysctl.conf",
             "systemctl enable redis-server",
             "systemctl start redis-server"
           ]' \
