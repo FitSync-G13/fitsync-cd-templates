@@ -519,20 +519,6 @@ jobs:
           --query 'StandardOutputContent' \
           --output text || echo "Could not retrieve output"
 
-    - name: List created secrets
-      run: |
-        echo "Listing created secrets in AWS Secrets Manager..."
-        
-        # List all secrets for this project and environment
-        aws secretsmanager list-secrets \
-          --filters Key=tag-key,Values=Project Key=tag-value,Values=${{ vars.PROJECT_NAME }} \
-          --query 'SecretList[?contains(Name, `${{ inputs.environment }}`)].{Name:Name,Description:Description}' \
-          --output table
-        
-        echo ""
-        echo "Secret naming pattern: ${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/{service}-db-url"
-        echo "Redis secret: ${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/redis-url"
-
     - name: Summary
       run: |
         echo "=========================================="
