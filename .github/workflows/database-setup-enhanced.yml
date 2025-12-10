@@ -195,67 +195,59 @@ jobs:
           
           DB_CREDENTIALS="${DB_CREDENTIALS}${db_name}:${username}:${password},"
           echo "Generated credentials for ${db_name}"
+          
+          # Create each database individually
+          echo "Creating database: ${db_name}"
+          
+          aws ssm send-command \
+            --instance-ids ${{ steps.get-db.outputs.instance_id }} \
+            --document-name "AWS-RunShellScript" \
+            --parameters commands="[
+              \"sudo -u postgres createdb ${db_name} || echo 'Database ${db_name} may already exist'\",
+              \"sudo -u postgres psql -c \\\"CREATE USER ${username} WITH PASSWORD '${password}';\\\" || echo 'User may already exist'\",
+              \"sudo -u postgres psql -c \\\"GRANT ALL PRIVILEGES ON DATABASE ${db_name} TO ${username};\\\"\",
+              \"sudo -u postgres psql -d ${db_name} -c \\\"GRANT ALL ON SCHEMA public TO ${username};\\\"\",
+              \"sudo -u postgres psql -d ${db_name} -c \\\"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${username};\\\"\",
+              \"sudo -u postgres psql -d ${db_name} -c \\\"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${username};\\\"\",
+              \"sudo -u postgres psql -d ${db_name} -c \\\"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${username};\\\"\",
+              \"sudo -u postgres psql -d ${db_name} -c \\\"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${username};\\\"\",
+              \"echo 'Created database ${db_name}'\"
+            ]" \
+            --output text \
+            --query "Command.CommandId" > /tmp/cmd_${db_name}.txt
+          
+          COMMAND_ID=$(cat /tmp/cmd_${db_name}.txt)
+          
+          # Wait for this database creation to complete
+          for i in {1..30}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id $COMMAND_ID \
+              --instance-id ${{ steps.get-db.outputs.instance_id }} \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+            
+            if [ "$STATUS" == "Success" ]; then
+              echo "✅ Database ${db_name} created successfully"
+              break
+            elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
+              echo "❌ Database ${db_name} creation failed"
+              aws ssm get-command-invocation \
+                --command-id $COMMAND_ID \
+                --instance-id ${{ steps.get-db.outputs.instance_id }} \
+                --query 'StandardErrorContent' \
+                --output text
+              exit 1
+            fi
+            
+            echo "Status for ${db_name}: $STATUS ($i/30)"
+            sleep 2
+          done
         done
         
         # Remove trailing comma
         DB_CREDENTIALS=${DB_CREDENTIALS%,}
         echo "db_credentials=$DB_CREDENTIALS" >> $GITHUB_OUTPUT
-        
-        # Create databases and users on PostgreSQL
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters commands="[
-            \"#!/bin/bash\",
-            \"set -e\",
-            \"DB_CREDS='$DB_CREDENTIALS'\",
-            \"IFS=',' read -ra CREDS <<< \\\"\\$DB_CREDS\\\"\",
-            \"for cred in \\\"\\${CREDS[@]}\\\"; do\",
-            \"  IFS=':' read -ra PARTS <<< \\\"\\$cred\\\"\",
-            \"  db_name=\\\"\\${PARTS[0]}\\\"\",
-            \"  username=\\\"\\${PARTS[1]}\\\"\",
-            \"  password=\\\"\\${PARTS[2]}\\\"\",
-            \"  echo \\\"Creating database: \\$db_name\\\"\",
-            \"  sudo -u postgres createdb \\\"\\$db_name\\\" || echo \\\"Database \\$db_name may already exist\\\"\",
-            \"  sudo -u postgres psql -c \\\"CREATE USER \\\\\\\"\\$username\\\\\\\" WITH PASSWORD '\\$password';\\\" || echo \\\"User may already exist\\\"\",
-            \"  sudo -u postgres psql -c \\\"GRANT ALL PRIVILEGES ON DATABASE \\\\\\\"\\$db_name\\\\\\\" TO \\\\\\\"\\$username\\\\\\\";\\\"\",
-            \"  sudo -u postgres psql -d \\\"\\$db_name\\\" -c \\\"GRANT ALL ON SCHEMA public TO \\\\\\\"\\$username\\\\\\\";\\\"\",
-            \"  sudo -u postgres psql -d \\\"\\$db_name\\\" -c \\\"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO \\\\\\\"\\$username\\\\\\\";\\\"\",
-            \"  sudo -u postgres psql -d \\\"\\$db_name\\\" -c \\\"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO \\\\\\\"\\$username\\\\\\\";\\\"\",
-            \"  sudo -u postgres psql -d \\\"\\$db_name\\\" -c \\\"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO \\\\\\\"\\$username\\\\\\\";\\\"\",
-            \"  sudo -u postgres psql -d \\\"\\$db_name\\\" -c \\\"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO \\\\\\\"\\$username\\\\\\\";\\\"\",
-            \"  echo \\\"✅ Created database \\$db_name\\\"\",
-            \"done\"
-          ]" \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        echo "Waiting for database creation..."
-        
-        for i in {1..30}; do
-          STATUS=$(aws ssm get-command-invocation \
-            --command-id $COMMAND_ID \
-            --instance-id ${{ steps.get-db.outputs.instance_id }} \
-            --query 'Status' \
-            --output text 2>/dev/null || echo "Pending")
-          
-          if [ "$STATUS" == "Success" ]; then
-            echo "Databases created successfully"
-            break
-          elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
-            echo "Database creation failed"
-            aws ssm get-command-invocation \
-              --command-id $COMMAND_ID \
-              --instance-id ${{ steps.get-db.outputs.instance_id }} \
-              --query 'StandardErrorContent' \
-              --output text
-            exit 1
-          fi
-          
-          echo "Status: $STATUS ($i/30)"
-          sleep 5
-        done
+        echo "All databases created successfully"
     - name: Configure PostgreSQL
       run: |
         echo "Configuring PostgreSQL..."
