@@ -1,0 +1,430 @@
+name: Install Observability Stack (Unified)
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'K3s cluster name (artifact name from k3s install)'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of EC2 instance IDs for masters (>=1)'
+        required: true
+        type: string
+      worker_instances:
+        description: 'Comma-separated list of EC2 instance IDs for workers'
+        required: true
+        type: string
+      k3s_api_dns:
+        description: 'Public DNS name for the K3s API load balancer'
+        required: true
+        type: string
+      aws_region:
+        description: 'AWS region'
+        required: false
+        type: string
+        default: 'us-east-1'
+      k3s_version:
+        description: 'K3s version'
+        required: false
+        type: string
+        default: 'v1.29.4+k3s1'
+      opensearch_version:
+        description: 'OpenSearch version for the operator-managed cluster'
+        required: false
+        type: string
+        default: '2.13.0'
+      domain:
+        description: 'Base domain (falls back to env var DOMAIN_NAME)'
+        required: false
+        type: string
+        default: ''
+      opensearch_subdomain:
+        description: 'Subdomain prefix for OpenSearch API (falls back to env var OPENSEARCH_SUBDOMAIN)'
+        required: false
+        type: string
+        default: ''
+      dashboards_host:
+        description: 'FQDN for OpenSearch Dashboards ingress (falls back to env var DASHBOARDS_HOST or osd.<domain>)'
+        required: false
+        type: string
+        default: ''
+      acme_email:
+        description: 'Email for ACME registration'
+        required: false
+        type: string
+        default: 'sre@fitsync.online'
+      acme_server:
+        description: 'ACME directory URL (use staging for tests)'
+        required: false
+        type: string
+        default: 'https://acme-v02.api.letsencrypt.org/directory'
+      storage_class:
+        description: 'StorageClass name for EBS volumes (falls back to env var STORAGE_CLASS)'
+        required: false
+        type: string
+        default: ''
+      master_volume_size:
+        description: 'Volume size for master nodes (falls back to env var MASTER_VOLUME_SIZE)'
+        required: false
+        type: string
+        default: ''
+      data_volume_size:
+        description: 'Volume size for data nodes (falls back to env var DATA_VOLUME_SIZE)'
+        required: false
+        type: string
+        default: ''
+      opensearch_master_count:
+        description: 'Replica count for OpenSearch master (cluster_manager) nodes (falls back to env var OPENSEARCH_MASTER_COUNT)'
+        required: false
+        type: string
+        default: ''
+      opensearch_worker_count:
+        description: 'Replica count for OpenSearch data/ingest nodes (falls back to env var OPENSEARCH_WORKER_COUNT)'
+        required: false
+        type: string
+        default: ''
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+      ROUTE53_ACCESS_KEY_ID:
+        required: true
+      ROUTE53_SECRET_ACCESS_KEY:
+        required: true
+      AWS_EBS_CSI_ROLE_ARN:
+        required: true
+      OPENSEARCH_ADMIN_PASSWORD:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  KUBECONFIG: ${{ runner.temp }}/kubeconfig
+  NAMESPACE: observability
+
+jobs:
+  k3s-install:
+    name: Install K3s (masters + workers)
+    uses: FitSync-G13/fitsync-cd-templates/.github/workflows/k3s-install-modular.yml@main
+    with:
+      cluster_name: ${{ inputs.cluster_name }}
+      k3s_version: ${{ inputs.k3s_version }}
+      master_instances: ${{ inputs.master_instances }}
+      worker_instances: ${{ inputs.worker_instances }}
+      k3s_api_dns: ${{ inputs.k3s_api_dns }}
+      aws_region: ${{ inputs.aws_region }}
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+
+  observability:
+    name: Bootstrap OpenSearch + ingress + storage
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    needs: k3s-install
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      OPENSEARCH_VERSION: ${{ inputs.opensearch_version }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Download kubeconfig from K3s install job
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.cluster_name }}-kubeconfig
+          path: ${{ runner.temp }}
+
+      - name: Prepare kubeconfig
+        run: |
+          mkdir -p "$(dirname "$KUBECONFIG")"
+          mv "${{ runner.temp }}/kubeconfig" "$KUBECONFIG"
+          chmod 600 "$KUBECONFIG"
+
+      - name: Resolve OpenSearch hosts and counts
+        run: |
+          # Base domain
+          BASE_DOMAIN="${{ inputs.domain }}"
+          if [ -z "$BASE_DOMAIN" ]; then BASE_DOMAIN="${{ vars.DOMAIN_NAME }}"; fi
+          if [ -z "$BASE_DOMAIN" ]; then BASE_DOMAIN="obs.fitsync.online"; fi
+          echo "BASE_DOMAIN=${BASE_DOMAIN}" >> "$GITHUB_ENV"
+
+          # Subdomain for API
+          SUBDOMAIN_INPUT="${{ inputs.opensearch_subdomain }}"
+          SUBDOMAIN_VAR="${{ vars.OPENSEARCH_SUBDOMAIN }}"
+          SUBDOMAIN="${SUBDOMAIN_INPUT:-$SUBDOMAIN_VAR}"
+          if [ -z "$SUBDOMAIN" ]; then SUBDOMAIN="opensearch-api"; fi
+
+          API_HOST="${SUBDOMAIN}.${BASE_DOMAIN}"
+          DASHBOARDS_INPUT="${{ inputs.dashboards_host }}"
+          DASHBOARDS_VAR="${{ vars.DASHBOARDS_HOST }}"
+          DASHBOARDS_HOST="${DASHBOARDS_INPUT:-$DASHBOARDS_VAR}"
+          if [ -z "$DASHBOARDS_HOST" ]; then DASHBOARDS_HOST="osd.${BASE_DOMAIN}"; fi
+
+          # Counts
+          MASTER_COUNT_INPUT="${{ inputs.opensearch_master_count }}"
+          WORKER_COUNT_INPUT="${{ inputs.opensearch_worker_count }}"
+          MASTER_COUNT_VAR="${{ vars.OPENSEARCH_MASTER_COUNT }}"
+          WORKER_COUNT_VAR="${{ vars.OPENSEARCH_WORKER_COUNT }}"
+          MASTER_COUNT="${MASTER_COUNT_INPUT:-$MASTER_COUNT_VAR}"
+          WORKER_COUNT="${WORKER_COUNT_INPUT:-$WORKER_COUNT_VAR}"
+          if [ -z "$MASTER_COUNT" ]; then MASTER_COUNT=1; fi
+          if [ -z "$WORKER_COUNT" ]; then WORKER_COUNT=1; fi
+
+          # Storage defaults
+          STORAGE_INPUT="${{ inputs.storage_class }}"
+          STORAGE_VAR="${{ vars.STORAGE_CLASS }}"
+          STORAGE_CLASS="${STORAGE_INPUT:-$STORAGE_VAR}"
+          if [ -z "$STORAGE_CLASS" ]; then STORAGE_CLASS="gp3-ebs"; fi
+
+          MASTER_VOL_INPUT="${{ inputs.master_volume_size }}"
+          WORKER_VOL_INPUT="${{ inputs.data_volume_size }}"
+          MASTER_VOL_VAR="${{ vars.MASTER_VOLUME_SIZE }}"
+          WORKER_VOL_VAR="${{ vars.DATA_VOLUME_SIZE }}"
+          MASTER_VOLUME="${MASTER_VOL_INPUT:-$MASTER_VOL_VAR}"
+          DATA_VOLUME="${WORKER_VOL_INPUT:-$WORKER_VOL_VAR}"
+          if [ -z "$MASTER_VOLUME" ]; then MASTER_VOLUME="50Gi"; fi
+          if [ -z "$DATA_VOLUME" ]; then DATA_VOLUME="200Gi"; fi
+
+          # ACME defaults
+          ACME_EMAIL_INPUT="${{ inputs.acme_email }}"
+          ACME_EMAIL_VAR="${{ vars.CERT_EMAIL }}"
+          ACME_EMAIL="${ACME_EMAIL_INPUT:-$ACME_EMAIL_VAR}"
+          if [ -z "$ACME_EMAIL" ]; then ACME_EMAIL="sre@fitsync.online"; fi
+          echo "ACME_EMAIL=${ACME_EMAIL}" >> "$GITHUB_ENV"
+
+          echo "BASE_DOMAIN=${BASE_DOMAIN}" >> "$GITHUB_ENV"
+          echo "API_HOST=${API_HOST}" >> "$GITHUB_ENV"
+          echo "DASHBOARDS_HOST=${DASHBOARDS_HOST}" >> "$GITHUB_ENV"
+          echo "MASTER_COUNT=${MASTER_COUNT}" >> "$GITHUB_ENV"
+          echo "WORKER_COUNT=${WORKER_COUNT}" >> "$GITHUB_ENV"
+          echo "STORAGE_CLASS=${STORAGE_CLASS}" >> "$GITHUB_ENV"
+          echo "MASTER_VOLUME=${MASTER_VOLUME}" >> "$GITHUB_ENV"
+          echo "DATA_VOLUME=${DATA_VOLUME}" >> "$GITHUB_ENV"
+
+      - name: Add Helm repos
+        run: |
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver
+          helm repo update
+
+      - name: Create namespaces and StorageClass
+        env:
+          AWS_REGION: ${{ inputs.aws_region }}
+        run: |
+          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: ${STORAGE_CLASS}
+          provisioner: ebs.csi.aws.com
+          parameters:
+            type: gp3
+            encrypted: "true"
+          reclaimPolicy: Delete
+          volumeBindingMode: WaitForFirstConsumer
+          allowVolumeExpansion: true
+          EOF
+
+      - name: Install cert-manager
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.15.1/cert-manager.crds.yaml
+          helm upgrade --install cert-manager jetstack/cert-manager \
+            --namespace cert-manager --create-namespace \
+            --set installCRDs=false
+
+      - name: Provision Route53 credentials secret for ACME DNS-01
+        run: |
+          kubectl -n cert-manager delete secret route53-credentials --ignore-not-found
+          kubectl -n cert-manager create secret generic route53-credentials \
+            --from-literal=aws_access_key_id='${{ secrets.ROUTE53_ACCESS_KEY_ID }}' \
+            --from-literal=aws_secret_access_key='${{ secrets.ROUTE53_SECRET_ACCESS_KEY }}'
+
+      - name: Create ClusterIssuer for wildcard certs
+        env:
+          ACME_EMAIL: ${{ inputs.acme_email }}
+          ACME_SERVER: ${{ inputs.acme_server }}
+          AWS_REGION: ${{ inputs.aws_region }}
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-dns
+          spec:
+            acme:
+              email: ${ACME_EMAIL}
+              server: ${ACME_SERVER}
+              privateKeySecretRef:
+                name: letsencrypt-dns
+              solvers:
+                - dns01:
+                    route53:
+                      region: ${AWS_REGION}
+                      hostedZoneID: ""  # TODO: set your hosted zone ID
+                      accessKeyIDSecretRef:
+                        name: route53-credentials
+                        key: aws_access_key_id
+                      secretAccessKeySecretRef:
+                        name: route53-credentials
+                        key: aws_secret_access_key
+          EOF
+
+      - name: Request wildcard certificate
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: wildcard-${BASE_DOMAIN//./-}
+            namespace: ${NAMESPACE}
+          spec:
+            secretName: wildcard-tls
+            issuerRef:
+              name: letsencrypt-dns
+              kind: ClusterIssuer
+            dnsNames:
+              - "*.${BASE_DOMAIN}"
+              - "${BASE_DOMAIN}"
+          EOF
+
+      - name: Install ingress-nginx (for OpenSearch Dashboards/API)
+        run: |
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            --namespace ingress-nginx \
+            --set controller.service.type=LoadBalancer \
+            --set controller.ingressClassResource.name=nginx \
+            --set controller.ingressClassResource.controllerValue=k8s.io/ingress-nginx \
+            --set controller.metrics.enabled=true
+
+      - name: Install AWS EBS CSI driver
+        run: |
+          helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
+            --namespace kube-system \
+            --set controller.serviceAccount.create=true \
+            --set controller.serviceAccount.name=ebs-csi-controller-sa \
+            --set controller.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"='${{ secrets.AWS_EBS_CSI_ROLE_ARN }}' \
+            --set imagePullPolicy=IfNotPresent
+
+      - name: Install OpenSearch Operator
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-operator/main/deploy/crds/opensearch.opster.io_opensearchclusters.yaml
+          kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-operator/main/deploy/operator.yaml
+
+      - name: Create OpenSearch cluster
+        env:
+          ADMIN_PASSWORD: ${{ secrets.OPENSEARCH_ADMIN_PASSWORD }}
+        run: |
+          kubectl -n ${NAMESPACE} delete secret opensearch-admin-credentials --ignore-not-found
+          kubectl -n ${NAMESPACE} create secret generic opensearch-admin-credentials \
+            --from-literal=admin_password="${ADMIN_PASSWORD}"
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: opensearch.opster.io/v1
+          kind: OpenSearchCluster
+          metadata:
+            name: obs-os
+            namespace: ${NAMESPACE}
+          spec:
+            general:
+              version: ${OPENSEARCH_VERSION}
+              httpPort: 9200
+              serviceName: opensearch-api
+              setVMMaxMapCount: true
+            security:
+              tls:
+                transport:
+                  generate: true
+                http:
+                  generate: false
+                  secret:
+                    name: wildcard-tls
+              config:
+                securityadmin:
+                  adminSecret: opensearch-admin-credentials
+                  adminPasswordKey: admin_password
+            dashboards:
+              enable: true
+              replicas: 1
+              tls:
+                secret:
+                  name: wildcard-tls
+              ingress:
+                host: ${DASHBOARDS_HOST}
+                tls:
+                  enable: true
+                  secret:
+                    name: wildcard-tls
+            nodePools:
+              - component: masters
+                replicas: ${MASTER_COUNT}
+                roles:
+                  - cluster_manager
+                resources:
+                  requests:
+                    cpu: "1"
+                    memory: 2Gi
+                persistence:
+                  pvc:
+                    storageClass: ${STORAGE_CLASS}
+                    size: ${MASTER_VOLUME}
+              - component: data
+                replicas: ${WORKER_COUNT}
+                roles:
+                  - data
+                  - ingest
+                resources:
+                  requests:
+                    cpu: "2"
+                    memory: 4Gi
+                persistence:
+                  pvc:
+                    storageClass: ${STORAGE_CLASS}
+                    size: ${DATA_VOLUME}
+          EOF
+
+      - name: Expose OpenSearch API via ingress
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: opensearch-api
+            namespace: ${NAMESPACE}
+            annotations:
+              kubernetes.io/ingress.class: nginx
+              nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+              cert-manager.io/cluster-issuer: letsencrypt-dns
+          spec:
+            tls:
+              - hosts:
+                  - ${API_HOST}
+                secretName: wildcard-tls
+            rules:
+              - host: ${API_HOST}
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: opensearch-api
+                          port:
+                            number: 9200
+          EOF
+
