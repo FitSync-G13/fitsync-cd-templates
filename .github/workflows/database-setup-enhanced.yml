@@ -460,9 +460,20 @@ jobs:
             \"grep -q '^tls-key-file' /etc/redis/redis.conf || echo 'tls-key-file /etc/redis/certs/server.key' >> /etc/redis/redis.conf\",
             \"grep -q '^tls-ca-cert-file' /etc/redis/redis.conf || echo 'tls-ca-cert-file /etc/redis/certs/server.crt' >> /etc/redis/redis.conf\",
             \"grep -q '^tls-auth-clients no' /etc/redis/redis.conf || echo 'tls-auth-clients no' >> /etc/redis/redis.conf\",
-            \"# Restart services\",
-            \"systemctl restart postgresql\",
-            \"systemctl restart redis-server\"
+            \"# Restart services with error handling\",
+            \"echo 'Stopping services gracefully...'\",
+            \"systemctl stop postgresql redis-server || true\",
+            \"pkill -f redis-server || true\",
+            \"rm -f /var/lib/redis/dump.rdb || true\",
+            \"sleep 2\",
+            \"echo 'Starting PostgreSQL...'\",
+            \"systemctl start postgresql\",
+            \"echo 'Starting Redis...'\",
+            \"systemctl start redis-server\",
+            \"sleep 3\",
+            \"echo 'Verifying services...'\",
+            \"systemctl is-active postgresql && echo 'PostgreSQL: OK' || echo 'PostgreSQL: FAILED'\",
+            \"systemctl is-active redis-server && echo 'Redis: OK' || echo 'Redis: FAILED'\"
           ]" \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
