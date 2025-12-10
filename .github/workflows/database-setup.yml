@@ -75,7 +75,7 @@ jobs:
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "if mountpoint -q /mnt/data; then echo \"Volume already mounted\"; exit 0; fi",
-            "DEVICE=$(lsblk -o NAME,SIZE -d -n | grep -E \"50G|49.\\dG\" | awk \"{print \"/dev/\" \\$1}\" | head -1)",
+            "DEVICE=$(lsblk -o NAME,SIZE,TYPE -n | grep disk | awk '\\$2 ~ /50G/ {print \"/dev/\" \\$1}' | head -1)",
             "if [ -z \"$DEVICE\" ]; then echo \"Error: 50GB volume not found\"; lsblk; exit 1; fi",
             "echo \"Found device: $DEVICE\"",
             "if ! blkid $DEVICE; then mkfs.ext4 -F $DEVICE; fi",
