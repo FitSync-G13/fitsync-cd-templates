@@ -81,7 +81,7 @@ jobs:
             "if mountpoint -q /mnt/data; then echo \"Volume already mounted at /mnt/data\"; df -h /mnt/data; exit 0; fi",
             "echo \"Finding EBS volume...\"",
             "lsblk -o NAME,SIZE,TYPE | grep disk",
-            "DEVICE=/dev/$(lsblk -d -o NAME,SIZE | grep -v '^NAME' | grep -E '[0-9]+G' | tail -1 | cut -d' ' -f1)",
+            "DEVICE=$(ls /dev/nvme*n1 | grep -v nvme0n1 | head -1)",
             "if [ -z \"$DEVICE\" ]; then echo \"Error: Additional EBS volume not found\"; lsblk; exit 1; fi",
             "echo \"Found EBS device: $DEVICE\"",
             "echo \"Checking if device has filesystem...\"",
