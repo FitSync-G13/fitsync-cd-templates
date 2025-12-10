@@ -1,4 +1,4 @@
-name: Database Setup (PostgreSQL + Redis + TLS)
+name: Enhanced Database Setup (PostgreSQL + Redis + Multi-DB + Secrets)
 
 on:
   workflow_call:
@@ -21,6 +21,10 @@ on:
         required: false
         type: string
         default: '7'
+      database_names:
+        description: 'Comma-separated list of database names to create'
+        required: true
+        type: string
     secrets:
       AWS_ROLE_ARN:
         required: true
@@ -65,7 +69,6 @@ jobs:
         
         echo "instance_id=$DB_INSTANCE_ID" >> $GITHUB_OUTPUT
         echo "Database Instance: $DB_INSTANCE_ID"
-
     - name: Mount EBS volume
       run: |
         echo "Mounting EBS volume..."
@@ -103,11 +106,6 @@ jobs:
           
           if [ "$STATUS" == "Success" ]; then
             echo "Volume mounted successfully"
-            aws ssm get-command-invocation \
-              --command-id $COMMAND_ID \
-              --instance-id ${{ steps.get-db.outputs.instance_id }} \
-              --query 'StandardOutputContent' \
-              --output text
             break
           elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
             echo "Volume mount failed"
@@ -133,7 +131,7 @@ jobs:
           --parameters 'commands=[
             "if dpkg -l | grep -q postgresql-${{ inputs.postgres_version }}; then echo \"PostgreSQL already installed\"; exit 0; fi",
             "apt update",
-            "apt install -y wget ca-certificates",
+            "apt install -y wget ca-certificates pwgen",
             "wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -",
             "echo \"deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main\" > /etc/apt/sources.list.d/pgdg.list",
             "apt update",
@@ -179,7 +177,87 @@ jobs:
           echo "Status: $STATUS ($i/60)"
           sleep 5
         done
-
+    - name: Generate database credentials and create databases
+      id: create-dbs
+      run: |
+        echo "Creating databases and users..."
+        
+        # Convert comma-separated database names to array
+        IFS=',' read -ra DB_NAMES <<< "${{ inputs.database_names }}"
+        
+        # Generate credentials for each database
+        DB_CREDENTIALS=""
+        for db_name in "${DB_NAMES[@]}"; do
+          # Generate random username (pet name without special chars)
+          username=$(echo "${db_name}_$(openssl rand -hex 4)" | tr '[:upper:]' '[:lower:]')
+          # Generate random password (alphanumeric only)
+          password=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+          
+          DB_CREDENTIALS="${DB_CREDENTIALS}${db_name}:${username}:${password},"
+          echo "Generated credentials for ${db_name}: ${username}"
+        done
+        
+        # Remove trailing comma
+        DB_CREDENTIALS=${DB_CREDENTIALS%,}
+        echo "db_credentials=$DB_CREDENTIALS" >> $GITHUB_OUTPUT
+        
+        # Create databases and users on PostgreSQL
+        aws ssm send-command \
+          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
+          --document-name "AWS-RunShellScript" \
+          --parameters commands="[
+            \"echo 'Creating databases and users...'\",
+            \"IFS=',' read -ra CREDS <<< '$DB_CREDENTIALS'\",
+            \"for cred in \\\"\\\${CREDS[@]}\\\"; do\",
+            \"  IFS=':' read -ra PARTS <<< \\\"\\\$cred\\\"\",
+            \"  db_name=\\\"\\\${PARTS[0]}\\\"\",
+            \"  username=\\\"\\\${PARTS[1]}\\\"\",
+            \"  password=\\\"\\\${PARTS[2]}\\\"\",
+            \"  echo \\\"Creating database: \\\$db_name with user: \\\$username\\\"\",
+            \"  sudo -u postgres psql -c \\\"CREATE DATABASE \\\$db_name;\\\" || echo \\\"Database \\\$db_name may already exist\\\"\",
+            \"  sudo -u postgres psql -c \\\"CREATE USER \\\$username WITH PASSWORD '\\\$password';\\\" || echo \\\"User \\\$username may already exist\\\"\",
+            \"  sudo -u postgres psql -c \\\"GRANT ALL PRIVILEGES ON DATABASE \\\$db_name TO \\\$username;\\\"\",
+            \"  sudo -u postgres psql -d \\\$db_name -c \\\"GRANT ALL ON SCHEMA public TO \\\$username;\\\"\",
+            \"  sudo -u postgres psql -d \\\$db_name -c \\\"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO \\\$username;\\\"\",
+            \"  sudo -u postgres psql -d \\\$db_name -c \\\"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO \\\$username;\\\"\",
+            \"  sudo -u postgres psql -d \\\$db_name -c \\\"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO \\\$username;\\\"\",
+            \"  sudo -u postgres psql -d \\\$db_name -c \\\"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO \\\$username;\\\"\",
+            \"done\"
+          ]" \
+          --output text \
+          --query "Command.CommandId" > /tmp/cmd_id.txt
+        
+        COMMAND_ID=$(cat /tmp/cmd_id.txt)
+        echo "Waiting for database creation..."
+        
+        for i in {1..30}; do
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id $COMMAND_ID \
+            --instance-id ${{ steps.get-db.outputs.instance_id }} \
+            --query 'Status' \
+            --output text 2>/dev/null || echo "Pending")
+          
+          if [ "$STATUS" == "Success" ]; then
+            echo "Databases created successfully"
+            aws ssm get-command-invocation \
+              --command-id $COMMAND_ID \
+              --instance-id ${{ steps.get-db.outputs.instance_id }} \
+              --query 'StandardOutputContent' \
+              --output text
+            break
+          elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
+            echo "Database creation failed"
+            aws ssm get-command-invocation \
+              --command-id $COMMAND_ID \
+              --instance-id ${{ steps.get-db.outputs.instance_id }} \
+              --query 'StandardErrorContent' \
+              --output text
+            exit 1
+          fi
+          
+          echo "Status: $STATUS ($i/30)"
+          sleep 5
+        done
     - name: Configure PostgreSQL
       run: |
         echo "Configuring PostgreSQL..."
@@ -250,50 +328,15 @@ jobs:
           sleep 5
         done
 
-    - name: Configure Redis
+    - name: Install Certbot and obtain TLS certificate
       run: |
-        echo "Configuring Redis..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "grep -q \"^bind 0.0.0.0\" /etc/redis/redis.conf || sed -i \"s/^bind 127.0.0.1 -::1/bind 0.0.0.0/\" /etc/redis/redis.conf",
-            "grep -q \"^protected-mode no\" /etc/redis/redis.conf || sed -i \"s/^protected-mode yes/protected-mode no/\" /etc/redis/redis.conf",
-            "systemctl restart redis-server"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
-        echo "Redis configured"
-
-    - name: Install Certbot
-      run: |
-        echo "Installing Certbot..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "apt install -y certbot python3-certbot-dns-cloudflare"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
-        echo "Certbot installed"
-
-    - name: Obtain TLS certificate
-      run: |
-        echo "Obtaining TLS certificate for ${{ vars.DB_PRIVATE_DNS }}..."
+        echo "Installing Certbot and obtaining TLS certificate..."
         
         aws ssm send-command \
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
           --document-name "AWS-RunShellScript" \
           --parameters commands='[
+            "apt install -y certbot python3-certbot-dns-cloudflare",
             "if [ -d /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }} ]; then echo \"Certificate exists\"; exit 0; fi",
             "mkdir -p /root/.secrets",
             "echo \"dns_cloudflare_email = ${{ vars.CERT_EMAIL }}\" > /root/.secrets/cloudflare.ini",
@@ -330,15 +373,15 @@ jobs:
           echo "Status: $STATUS ($i/60)"
           sleep 5
         done
-
-    - name: Configure PostgreSQL TLS
+    - name: Configure PostgreSQL and Redis TLS
       run: |
-        echo "Configuring PostgreSQL TLS..."
+        echo "Configuring TLS for PostgreSQL and Redis..."
         
         aws ssm send-command \
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
           --document-name "AWS-RunShellScript" \
           --parameters commands="[
+            \"# Configure PostgreSQL TLS\",
             \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.crt\",
             \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key\",
             \"chown postgres:postgres /var/lib/postgresql/${{ inputs.postgres_version }}/main/server.*\",
@@ -346,23 +389,7 @@ jobs:
             \"grep -q '^ssl = on' /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf || sed -i 's/#ssl = off/ssl = on/' /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf\",
             \"grep -q \\\"ssl_cert_file = '/var/lib/postgresql/${{ inputs.postgres_version }}/main/server.crt'\\\" /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf || sed -i \\\"s|#ssl_cert_file = 'server.crt'|ssl_cert_file = '/var/lib/postgresql/${{ inputs.postgres_version }}/main/server.crt'|\\\" /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf\",
             \"grep -q \\\"ssl_key_file = '/var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key'\\\" /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf || sed -i \\\"s|#ssl_key_file = 'server.key'|ssl_key_file = '/var/lib/postgresql/${{ inputs.postgres_version }}/main/server.key'|\\\" /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf\",
-            \"systemctl restart postgresql\"
-          ]" \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
-        echo "PostgreSQL TLS configured"
-
-    - name: Configure Redis TLS
-      run: |
-        echo "Configuring Redis TLS..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters commands="[
+            \"# Configure Redis TLS\",
             \"mkdir -p /etc/redis/certs\",
             \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /etc/redis/certs/server.crt\",
             \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /etc/redis/certs/server.key\",
@@ -374,6 +401,8 @@ jobs:
             \"grep -q '^tls-key-file' /etc/redis/redis.conf || echo 'tls-key-file /etc/redis/certs/server.key' >> /etc/redis/redis.conf\",
             \"grep -q '^tls-ca-cert-file' /etc/redis/redis.conf || echo 'tls-ca-cert-file /etc/redis/certs/server.crt' >> /etc/redis/redis.conf\",
             \"grep -q '^tls-auth-clients no' /etc/redis/redis.conf || echo 'tls-auth-clients no' >> /etc/redis/redis.conf\",
+            \"# Restart services\",
+            \"systemctl restart postgresql\",
             \"systemctl restart redis-server\"
           ]" \
           --output text \
@@ -381,7 +410,61 @@ jobs:
         
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
         aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
-        echo "Redis TLS configured"
+        echo "TLS configured for PostgreSQL and Redis"
+
+    - name: Store database connection strings in AWS Secrets Manager
+      run: |
+        echo "Storing database connection strings in AWS Secrets Manager..."
+        
+        # Parse database credentials
+        IFS=',' read -ra CREDS <<< "${{ steps.create-dbs.outputs.db_credentials }}"
+        
+        # Create connection strings for each database
+        for cred in "${CREDS[@]}"; do
+          IFS=':' read -ra PARTS <<< "$cred"
+          db_name="${PARTS[0]}"
+          username="${PARTS[1]}"
+          password="${PARTS[2]}"
+          
+          # PostgreSQL connection string with TLS
+          pg_connection_string="postgresql://${username}:${password}@${{ vars.DB_PRIVATE_DNS }}:5432/${db_name}?sslmode=require"
+          
+          # Secret name format: fitsync/{environment}/{service}-db-url
+          secret_name="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/${db_name}-db-url"
+          
+          echo "Creating secret: $secret_name"
+          
+          # Create or update secret
+          aws secretsmanager create-secret \
+            --name "$secret_name" \
+            --description "Database connection string for ${db_name} in ${{ inputs.environment }}" \
+            --secret-string "$pg_connection_string" \
+            --tags '[{"Key":"Project","Value":"${{ vars.PROJECT_NAME }}"},{"Key":"Environment","Value":"${{ inputs.environment }}"},{"Key":"Service","Value":"'${db_name}'"}]' \
+            2>/dev/null || \
+          aws secretsmanager update-secret \
+            --secret-id "$secret_name" \
+            --secret-string "$pg_connection_string"
+          
+          echo "✅ Created secret for ${db_name}: $secret_name"
+        done
+        
+        # Create Redis connection string
+        redis_connection_string="redis://${{ vars.DB_PRIVATE_DNS }}:6379?tls=true"
+        redis_secret_name="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/redis-url"
+        
+        echo "Creating Redis secret: $redis_secret_name"
+        
+        aws secretsmanager create-secret \
+          --name "$redis_secret_name" \
+          --description "Redis connection string for ${{ inputs.environment }}" \
+          --secret-string "$redis_connection_string" \
+          --tags '[{"Key":"Project","Value":"${{ vars.PROJECT_NAME }}"},{"Key":"Environment","Value":"${{ inputs.environment }}"},{"Key":"Service","Value":"redis"}]' \
+          2>/dev/null || \
+        aws secretsmanager update-secret \
+          --secret-id "$redis_secret_name" \
+          --secret-string "$redis_connection_string"
+        
+        echo "✅ Created Redis secret: $redis_secret_name"
 
     - name: Setup certificate auto-renewal
       run: |
@@ -412,68 +495,26 @@ jobs:
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
         aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }}
         echo "Auto-renewal configured"
-
-    - name: Verify PostgreSQL
+    - name: Verify database setup
       run: |
-        echo "Verifying PostgreSQL..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "systemctl status postgresql --no-pager || true",
-            "sudo -u postgres psql -c \"SELECT version();\" || true",
-            "sudo -u postgres psql -c \"SHOW ssl;\" || true"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }} || true
-        
-        aws ssm get-command-invocation \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }} \
-          --query 'StandardOutputContent' \
-          --output text || echo "Could not retrieve output"
-
-    - name: Verify Redis
-      run: |
-        echo "Verifying Redis..."
-        
-        aws ssm send-command \
-          --instance-ids ${{ steps.get-db.outputs.instance_id }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "systemctl status redis-server --no-pager || true",
-            "redis-cli --tls --cacert /etc/ssl/certs/ca-certificates.crt ping || true"
-          ]' \
-          --output text \
-          --query "Command.CommandId" > /tmp/cmd_id.txt
-        
-        COMMAND_ID=$(cat /tmp/cmd_id.txt)
-        aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }} || true
-        
-        aws ssm get-command-invocation \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ steps.get-db.outputs.instance_id }} \
-          --query 'StandardOutputContent' \
-          --output text || echo "Could not retrieve output"
-
-    - name: Test database connectivity
-      run: |
-        echo "Testing connectivity..."
+        echo "Verifying database setup..."
         
         aws ssm send-command \
           --instance-ids ${{ steps.get-db.outputs.instance_id }} \
           --document-name "AWS-RunShellScript" \
           --parameters commands="[
-            \"apt install -y netcat-openbsd || true\",
-            \"nc -zv localhost 5432 || echo 'PostgreSQL port check failed'\",
-            \"nc -zv localhost 6379 || echo 'Redis port check failed'\",
+            \"echo '=== PostgreSQL Status ==='\",
+            \"systemctl status postgresql --no-pager || true\",
+            \"sudo -u postgres psql -c 'SELECT version();' || true\",
+            \"sudo -u postgres psql -c 'SHOW ssl;' || true\",
+            \"sudo -u postgres psql -c '\\\\l' || true\",
+            \"echo '=== Redis Status ==='\",
+            \"systemctl status redis-server --no-pager || true\",
+            \"redis-cli --tls --cacert /etc/ssl/certs/ca-certificates.crt ping || true\",
+            \"echo '=== Port Status ==='\",
             \"ss -tlnp | grep -E ':(5432|6379)' || true\",
-            \"sudo -u postgres psql -c 'SELECT 1;' || echo 'PostgreSQL query failed'\",
-            \"redis-cli --tls --cacert /etc/ssl/certs/ca-certificates.crt ping || echo 'Redis ping failed'\"
+            \"echo '=== Certificate Status ==='\",
+            \"ls -la /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/ || true\"
           ]" \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
@@ -481,25 +522,49 @@ jobs:
         COMMAND_ID=$(cat /tmp/cmd_id.txt)
         aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ steps.get-db.outputs.instance_id }} || true
         
-        echo "Connectivity test output:"
+        echo "Verification output:"
         aws ssm get-command-invocation \
           --command-id $COMMAND_ID \
           --instance-id ${{ steps.get-db.outputs.instance_id }} \
           --query 'StandardOutputContent' \
           --output text || echo "Could not retrieve output"
 
+    - name: List created secrets
+      run: |
+        echo "Listing created secrets in AWS Secrets Manager..."
+        
+        # List all secrets for this project and environment
+        aws secretsmanager list-secrets \
+          --filters Key=tag-key,Values=Project Key=tag-value,Values=${{ vars.PROJECT_NAME }} \
+          --query 'SecretList[?contains(Name, `${{ inputs.environment }}`)].{Name:Name,Description:Description}' \
+          --output table
+        
+        echo ""
+        echo "Secret naming pattern: ${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/{service}-db-url"
+        echo "Redis secret: ${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/redis-url"
+
     - name: Summary
       run: |
         echo "=========================================="
-        echo "Database Setup Complete!"
+        echo "Enhanced Database Setup Complete!"
         echo "=========================================="
         echo "PostgreSQL: ${{ inputs.postgres_version }}"
         echo "Redis: ${{ inputs.redis_version }}"
         echo "Database DNS: ${{ vars.DB_PRIVATE_DNS }}"
         echo "TLS: Enabled"
         echo "Data Directory: /mnt/data"
-        echo "=========================================="
-        echo "Connection strings:"
-        echo "PostgreSQL: postgresql://user:password@${{ vars.DB_PRIVATE_DNS }}:5432/dbname?sslmode=require"
-        echo "Redis: redis://${{ vars.DB_PRIVATE_DNS }}:6379?tls=true"
+        echo ""
+        echo "Created databases:"
+        IFS=',' read -ra DB_NAMES <<< "${{ inputs.database_names }}"
+        for db_name in "${DB_NAMES[@]}"; do
+          echo "  - ${db_name}"
+        done
+        echo ""
+        echo "Secrets stored in AWS Secrets Manager:"
+        echo "  Pattern: ${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/{service}-db-url"
+        echo "  Redis: ${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/redis-url"
+        echo ""
+        echo "Connection format:"
+        echo "  PostgreSQL: postgresql://user:pass@${{ vars.DB_PRIVATE_DNS }}:5432/dbname?sslmode=require"
+        echo "  Redis: redis://${{ vars.DB_PRIVATE_DNS }}:6379?tls=true"
         echo "=========================================="
