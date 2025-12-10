@@ -89,7 +89,7 @@ jobs:
             "echo \"Creating mount point...\"",
             "mkdir -p /mnt/data",
             "echo \"Mounting $DEVICE to /mnt/data\"",
-            "mount -o rw $DEVICE /mnt/data",
+            "mount $DEVICE /mnt/data",
             "echo \"Adding to fstab for persistence...\"",
             "UUID=$(blkid -s UUID -o value $DEVICE)",
             "grep -q \"$UUID\" /etc/fstab || echo \"UUID=$UUID /mnt/data ext4 defaults,nofail 0 2\" >> /etc/fstab",
@@ -354,7 +354,6 @@ jobs:
             "mkdir -p /mnt/data/redis",
             "chown redis:redis /mnt/data/redis",
             "sed -i \"s|^dir .*|dir /mnt/data/redis|\" /etc/redis/redis.conf",
-            "echo 'stop-writes-on-bgsave-error no' >> /etc/redis/redis.conf",
             "systemctl enable redis-server",
             "systemctl start redis-server"
           ]' \
