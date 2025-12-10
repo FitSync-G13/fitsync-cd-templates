@@ -505,7 +505,7 @@ jobs:
         done
         
         # Create Redis connection string (only if not exists)
-        redis_connection_string="redis://${{ vars.DB_PRIVATE_DNS }}:6379?tls=true"
+        redis_connection_string="rediss://${{ vars.DB_PRIVATE_DNS }}:6379"
         redis_secret_name="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/redis-url"
         
         echo "Creating Redis secret: $redis_secret_name"
