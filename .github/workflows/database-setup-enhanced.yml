@@ -461,8 +461,10 @@ jobs:
             \"grep -q '^tls-ca-cert-file' /etc/redis/redis.conf || echo 'tls-ca-cert-file /etc/redis/certs/server.crt' >> /etc/redis/redis.conf\",
             \"grep -q '^tls-auth-clients no' /etc/redis/redis.conf || echo 'tls-auth-clients no' >> /etc/redis/redis.conf\",
             \"# Restart services\",
-            \"systemctl restart postgresql\",
-            \"systemctl restart redis-server\"
+            \"redis-cli shutdown nosave || true\",
+            \"sleep 2\",
+            \"systemctl start postgresql\",
+            \"systemctl start redis-server\"
           ]" \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
