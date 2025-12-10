@@ -124,6 +124,50 @@ jobs:
           exit 1
         fi
 
+    - name: Configure cert-manager DNS resolvers
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Configuring cert-manager DNS resolvers for private zone compatibility..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
+          --parameters "commands=[
+            \"echo Configuring cert-manager DNS resolvers...\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl patch deployment cert-manager -n cert-manager --type='json' -p='[{\\\"op\\\": \\\"add\\\", \\\"path\\\": \\\"/spec/template/spec/containers/0/args/-\\\", \\\"value\\\": \\\"--dns01-recursive-nameservers-only\\\"}, {\\\"op\\\": \\\"add\\\", \\\"path\\\": \\\"/spec/template/spec/containers/0/args/-\\\", \\\"value\\\": \\\"--dns01-recursive-nameservers=8.8.8.8:53,1.1.1.1:53\\\"}]'\",
+            \"echo Waiting for cert-manager rollout...\",
+            \"sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl rollout status deployment/cert-manager -n cert-manager --timeout=300s\",
+            \"echo DNS resolver configuration completed\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "DNS config command ID: $COMMAND_ID"
+        sleep 15
+        
+        STATUS=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'Status' \
+          --output text)
+        
+        OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text)
+        
+        echo "DNS config status: $STATUS"
+        echo "Output: $OUTPUT"
+        
+        if [ "$STATUS" != "Success" ]; then
+          echo "DNS resolver configuration failed"
+          exit 1
+        fi
+
     - name: Verify cert-manager
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
