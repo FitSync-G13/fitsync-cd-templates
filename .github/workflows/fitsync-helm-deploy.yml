@@ -189,6 +189,10 @@ jobs:
           env:
             JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
             REDIS_URL: "REDIS_URL_PLACEHOLDER"
+            
+        notificationService:
+          env:
+            REDIS_URL: "REDIS_URL_PLACEHOLDER"
 
         istio:
           virtualService:
