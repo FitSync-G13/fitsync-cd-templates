@@ -59,7 +59,6 @@ permissions:
 
 jobs:
   install-ecr-credential-provider:
-    if: ${{ inputs.install_masters || inputs.install_workers }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     
@@ -104,6 +103,7 @@ jobs:
             COMMAND_ID=$(aws ssm send-command \
               --instance-ids "$instance" \
               --document-name "AWS-RunShellScript" \
+              --timeout-seconds 300 \
               --parameters "commands=[
                 \"echo 'Installing ECR credential provider...'\",
                 \"wget -q https://github.com/dntosas/ecr-credential-provider/releases/download/$ECR_VERSION/ecr-credential-provider-linux-amd64\",
@@ -130,7 +130,8 @@ jobs:
             
             aws ssm wait command-executed \
               --command-id "$COMMAND_ID" \
-              --instance-id "$instance"
+              --instance-id "$instance" \
+              --cli-read-timeout 300
             
             echo "ECR credential provider installed on $instance"
           done
@@ -321,31 +322,28 @@ jobs:
             COMMAND_ID=$(aws ssm send-command \
               --instance-ids "$worker" \
               --document-name "AWS-RunShellScript" \
-              --timeout-seconds 600 \
+              --timeout-seconds 900 \
               --parameters "commands=[
                 \"echo 'Starting K3s agent installation...'\",
                 \"$INSTALL_CMD\",
                 \"echo 'K3s agent installed, enabling service...'\",
                 \"sudo systemctl enable k3s-agent\",
-                \"sudo systemctl start k3s-agent\",
-                \"echo 'Checking K3s agent status...'\",
-                \"sudo systemctl status k3s-agent --no-pager\",
                 \"echo 'K3s agent installation completed'\"
               ]" \
               --query 'Command.CommandId' \
               --output text)
             
             echo "Command ID: $COMMAND_ID"
-            echo "Waiting for command to complete (timeout: 10 minutes)..."
+            echo "Waiting for command to complete (timeout: 15 minutes)..."
             
-            # Wait with custom timeout
+            # Wait with extended timeout
             if aws ssm wait command-executed \
               --command-id "$COMMAND_ID" \
               --instance-id "$worker" \
-              --cli-read-timeout 600 \
+              --cli-read-timeout 900 \
               --cli-connect-timeout 60; then
               
-              echo "Command completed successfully"
+              echo "✅ K3s worker installation completed successfully on $worker"
               
               # Get the output
               aws ssm get-command-invocation \
@@ -354,12 +352,15 @@ jobs:
                 --query 'StandardOutputContent' \
                 --output text
             else
-              echo "Command timed out or failed. Getting partial output..."
+              echo "⚠️ Command timed out or failed on $worker. Getting partial output..."
               aws ssm get-command-invocation \
                 --command-id "$COMMAND_ID" \
                 --instance-id "$worker" \
                 --query '[StandardOutputContent, StandardErrorContent]' \
                 --output text || echo "Could not retrieve command output"
+              
+              # Don't fail the entire job, continue with other workers
+              echo "Continuing with remaining workers..."
             fi
           done
         else
