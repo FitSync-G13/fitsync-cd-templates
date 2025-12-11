@@ -153,6 +153,13 @@ jobs:
           imageTag: "latest"
           imagePullPolicy: "Always"
           
+        # Global environment variables (shared values only)
+        env:
+          JWT_EXPIRY: "15m"
+          JWT_REFRESH_EXPIRY: "7d"
+          RATE_LIMIT_WINDOW_MS: "900000"
+          RATE_LIMIT_MAX_REQUESTS: "100"
+          
         userService:
           env:
             DATABASE_URL: "USER_DB_PLACEHOLDER"
