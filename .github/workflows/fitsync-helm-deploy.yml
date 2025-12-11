@@ -153,35 +153,23 @@ jobs:
           imageTag: "latest"
           imagePullPolicy: "Always"
           
-        userService:
-          env:
-            DATABASE_URL: "USER_DB_PLACEHOLDER"
-            JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
-            JWT_REFRESH_SECRET: "JWT_REFRESH_SECRET_PLACEHOLDER"
-            REDIS_URL: "REDIS_URL_PLACEHOLDER"
-            
-        trainingService:
-          env:
-            DATABASE_URL: "TRAINING_DB_PLACEHOLDER"
-            JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
-            REDIS_URL: "REDIS_URL_PLACEHOLDER"
-            
-        scheduleService:
-          env:
-            DATABASE_URL: "SCHEDULE_DB_PLACEHOLDER"
-            JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
-            REDIS_URL: "REDIS_URL_PLACEHOLDER"
-            
-        progressService:
-          env:
-            DATABASE_URL: "PROGRESS_DB_PLACEHOLDER"
-            JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
-            REDIS_URL: "REDIS_URL_PLACEHOLDER"
-            
-        apiGateway:
-          env:
-            JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
-            REDIS_URL: "REDIS_URL_PLACEHOLDER"
+        # Global environment variables (what the templates expect)
+        env:
+          JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
+          JWT_REFRESH_SECRET: "JWT_REFRESH_SECRET_PLACEHOLDER"
+          JWT_EXPIRY: "15m"
+          JWT_REFRESH_EXPIRY: "7d"
+          USER_DATABASE_URL: "USER_DB_PLACEHOLDER"
+          TRAINING_DATABASE_URL: "TRAINING_DB_PLACEHOLDER"
+          SCHEDULE_DATABASE_URL: "SCHEDULE_DB_PLACEHOLDER"
+          PROGRESS_DATABASE_URL: "PROGRESS_DB_PLACEHOLDER"
+          REDIS_URL: "REDIS_URL_PLACEHOLDER"
+          RATE_LIMIT_WINDOW_MS: "900000"
+          RATE_LIMIT_MAX_REQUESTS: "100"
+          SMTP_HOST: "smtp.gmail.com"
+          SMTP_PORT: "587"
+          SMTP_USER: "noreply@fitsync.com"
+          SMTP_PASSWORD: ""
 
         istio:
           virtualService:
