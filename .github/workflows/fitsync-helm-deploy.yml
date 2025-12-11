@@ -90,6 +90,14 @@ jobs:
           --query 'SecretString' --output text)
         
         # Set outputs (masked for security)
+        echo "::add-mask::$USER_DB_URL"
+        echo "::add-mask::$TRAINING_DB_URL"
+        echo "::add-mask::$SCHEDULE_DB_URL"
+        echo "::add-mask::$PROGRESS_DB_URL"
+        echo "::add-mask::$REDIS_URL"
+        echo "::add-mask::$JWT_SECRET"
+        echo "::add-mask::$JWT_REFRESH_SECRET"
+        
         echo "user_db_url=$USER_DB_URL" >> $GITHUB_OUTPUT
         echo "training_db_url=$TRAINING_DB_URL" >> $GITHUB_OUTPUT
         echo "schedule_db_url=$SCHEDULE_DB_URL" >> $GITHUB_OUTPUT
@@ -136,63 +144,74 @@ jobs:
         
         echo "Deploying FitSync Helm chart to namespace: ${{ inputs.namespace }}"
         
-        # Create values file with secrets
-        cat > values-override.yaml << EOF
+        # Create values file with secrets (using temporary file approach)
+        TEMP_VALUES=$(mktemp)
+        cat > "$TEMP_VALUES" << 'EOF'
         global:
           environment: "${{ inputs.environment }}"
           
         userService:
           env:
-            DATABASE_URL: "${{ steps.get-secrets.outputs.user_db_url }}"
-            JWT_SECRET: "${{ steps.get-secrets.outputs.jwt_secret }}"
-            JWT_REFRESH_SECRET: "${{ steps.get-secrets.outputs.jwt_refresh_secret }}"
-            REDIS_URL: "${{ steps.get-secrets.outputs.redis_url }}"
+            DATABASE_URL: "USER_DB_PLACEHOLDER"
+            JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
+            JWT_REFRESH_SECRET: "JWT_REFRESH_SECRET_PLACEHOLDER"
+            REDIS_URL: "REDIS_URL_PLACEHOLDER"
             
         trainingService:
           env:
-            DATABASE_URL: "${{ steps.get-secrets.outputs.training_db_url }}"
-            JWT_SECRET: "${{ steps.get-secrets.outputs.jwt_secret }}"
-            REDIS_URL: "${{ steps.get-secrets.outputs.redis_url }}"
+            DATABASE_URL: "TRAINING_DB_PLACEHOLDER"
+            JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
+            REDIS_URL: "REDIS_URL_PLACEHOLDER"
             
         scheduleService:
           env:
-            DATABASE_URL: "${{ steps.get-secrets.outputs.schedule_db_url }}"
-            JWT_SECRET: "${{ steps.get-secrets.outputs.jwt_secret }}"
-            REDIS_URL: "${{ steps.get-secrets.outputs.redis_url }}"
+            DATABASE_URL: "SCHEDULE_DB_PLACEHOLDER"
+            JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
+            REDIS_URL: "REDIS_URL_PLACEHOLDER"
             
         progressService:
           env:
-            DATABASE_URL: "${{ steps.get-secrets.outputs.progress_db_url }}"
-            JWT_SECRET: "${{ steps.get-secrets.outputs.jwt_secret }}"
-            REDIS_URL: "${{ steps.get-secrets.outputs.redis_url }}"
+            DATABASE_URL: "PROGRESS_DB_PLACEHOLDER"
+            JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
+            REDIS_URL: "REDIS_URL_PLACEHOLDER"
             
         apiGateway:
           env:
-            JWT_SECRET: "${{ steps.get-secrets.outputs.jwt_secret }}"
-            REDIS_URL: "${{ steps.get-secrets.outputs.redis_url }}"
+            JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
+            REDIS_URL: "REDIS_URL_PLACEHOLDER"
         EOF
+        
+        # Replace placeholders with actual values
+        sed -i "s|USER_DB_PLACEHOLDER|${{ steps.get-secrets.outputs.user_db_url }}|g" "$TEMP_VALUES"
+        sed -i "s|TRAINING_DB_PLACEHOLDER|${{ steps.get-secrets.outputs.training_db_url }}|g" "$TEMP_VALUES"
+        sed -i "s|SCHEDULE_DB_PLACEHOLDER|${{ steps.get-secrets.outputs.schedule_db_url }}|g" "$TEMP_VALUES"
+        sed -i "s|PROGRESS_DB_PLACEHOLDER|${{ steps.get-secrets.outputs.progress_db_url }}|g" "$TEMP_VALUES"
+        sed -i "s|REDIS_URL_PLACEHOLDER|${{ steps.get-secrets.outputs.redis_url }}|g" "$TEMP_VALUES"
+        sed -i "s|JWT_SECRET_PLACEHOLDER|${{ steps.get-secrets.outputs.jwt_secret }}|g" "$TEMP_VALUES"
+        sed -i "s|JWT_REFRESH_SECRET_PLACEHOLDER|${{ steps.get-secrets.outputs.jwt_refresh_secret }}|g" "$TEMP_VALUES"
         
         # Copy chart and values to master
         CHART_TAR=$(tar -czf - fitsync-helm-chart | base64 -w 0)
-        VALUES_CONTENT=$(base64 -w 0 values-override.yaml)
+        VALUES_CONTENT=$(base64 -w 0 "$TEMP_VALUES")
+        
+        # Clean up temp file
+        rm "$TEMP_VALUES"
         
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 600 \
           --parameters "commands=[
-            \"echo 'Extracting Helm chart...'\"
+            \"echo 'Extracting Helm chart...'\",
             \"echo '$CHART_TAR' | base64 -d | tar -xzf -\",
             \"echo '$VALUES_CONTENT' | base64 -d > values-override.yaml\",
             \"export KUBECONFIG=/etc/rancher/k3s/k3s.yaml\",
             \"echo 'Creating namespace if not exists...'\",
             \"kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -\",
+            \"echo 'Enabling Istio sidecar injection for namespace...'\",
+            \"kubectl label namespace ${{ inputs.namespace }} istio-injection=enabled --overwrite\",
             \"echo 'Deploying FitSync Helm chart...'\",
-            \"helm upgrade --install fitsync ./fitsync-helm-chart/fitsync \\
-              --namespace ${{ inputs.namespace }} \\
-              --values ./fitsync-helm-chart/fitsync/values.yaml \\
-              --values values-override.yaml \\
-              --wait --timeout=10m\",
+            \"helm upgrade --install fitsync ./fitsync-helm-chart/fitsync --namespace ${{ inputs.namespace }} --values ./fitsync-helm-chart/fitsync/values.yaml --values values-override.yaml --wait --timeout=10m\",
             \"echo 'Deployment completed successfully'\",
             \"kubectl get pods -n ${{ inputs.namespace }}\",
             \"kubectl get services -n ${{ inputs.namespace }}\"
