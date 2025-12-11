@@ -78,6 +78,8 @@ env:
 jobs:
   build-test-push:
     runs-on: ubuntu-latest
+    environment: 
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
     outputs:
       image-tag: ${{ steps.meta.outputs.version }}
       image-uri: ${{ steps.image-info.outputs.image-uri }}
@@ -147,9 +149,6 @@ jobs:
             # Development tags (dev branch)
             type=sha,prefix=dev-,format=short,enable=${{ github.ref == 'refs/heads/dev' }}
             type=raw,value=dev-latest,enable=${{ github.ref == 'refs/heads/dev' }}
-            
-            # Pull request tags
-            type=ref,event=pr,prefix=pr-
           
           labels: |
             org.opencontainers.image.title=${{ inputs.service_name }}
