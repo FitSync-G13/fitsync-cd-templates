@@ -111,6 +111,8 @@ jobs:
                 \"sudo mv ecr-credential-provider-linux-amd64 /usr/local/bin/ecr-credential-provider\",
                 \"sudo mkdir -p /etc/kubernetes\",
                 \"echo '{' | sudo tee /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '  \\\"kind\\\": \\\"CredentialProviderConfig\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '  \\\"apiVersion\\\": \\\"kubelet.config.k8s.io/v1\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
                 \"echo '  \\\"providers\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
                 \"echo '    {' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
                 \"echo '      \\\"name\\\": \\\"ecr-credential-provider\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
