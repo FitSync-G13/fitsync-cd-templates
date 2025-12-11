@@ -1,0 +1,282 @@
+name: FitSync Helm Chart Deployment
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'K3s cluster name'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of master instance IDs'
+        required: true
+        type: string
+      helm_chart_version:
+        description: 'Helm chart version or branch'
+        required: false
+        type: string
+        default: 'main'
+      namespace:
+        description: 'Kubernetes namespace'
+        required: false
+        type: string
+        default: 'fitsync'
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-fitsync-helm:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-Helm-Deploy
+
+    - name: Checkout FitSync Helm Chart
+      uses: actions/checkout@v4
+      with:
+        repository: FitSync-G13/fitsync-helm-chart
+        ref: ${{ inputs.helm_chart_version }}
+        path: fitsync-helm-chart
+
+    - name: Get secrets from AWS Secrets Manager
+      id: get-secrets
+      run: |
+        echo "Retrieving secrets for environment: ${{ inputs.environment }}"
+        
+        # Get database URLs
+        USER_DB_URL=$(aws secretsmanager get-secret-value \
+          --secret-id "${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/userdb-db-url" \
+          --query 'SecretString' --output text)
+        
+        TRAINING_DB_URL=$(aws secretsmanager get-secret-value \
+          --secret-id "${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/trainingdb-db-url" \
+          --query 'SecretString' --output text)
+        
+        SCHEDULE_DB_URL=$(aws secretsmanager get-secret-value \
+          --secret-id "${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/scheduledb-db-url" \
+          --query 'SecretString' --output text)
+        
+        PROGRESS_DB_URL=$(aws secretsmanager get-secret-value \
+          --secret-id "${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/progressdb-db-url" \
+          --query 'SecretString' --output text)
+        
+        # Get Redis URL
+        REDIS_URL=$(aws secretsmanager get-secret-value \
+          --secret-id "${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/redis-url" \
+          --query 'SecretString' --output text)
+        
+        # Get JWT secrets
+        JWT_SECRET=$(aws secretsmanager get-secret-value \
+          --secret-id "${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/jwt-secret" \
+          --query 'SecretString' --output text)
+        
+        JWT_REFRESH_SECRET=$(aws secretsmanager get-secret-value \
+          --secret-id "${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/jwt-refresh-secret" \
+          --query 'SecretString' --output text)
+        
+        # Set outputs (masked for security)
+        echo "user_db_url=$USER_DB_URL" >> $GITHUB_OUTPUT
+        echo "training_db_url=$TRAINING_DB_URL" >> $GITHUB_OUTPUT
+        echo "schedule_db_url=$SCHEDULE_DB_URL" >> $GITHUB_OUTPUT
+        echo "progress_db_url=$PROGRESS_DB_URL" >> $GITHUB_OUTPUT
+        echo "redis_url=$REDIS_URL" >> $GITHUB_OUTPUT
+        echo "jwt_secret=$JWT_SECRET" >> $GITHUB_OUTPUT
+        echo "jwt_refresh_secret=$JWT_REFRESH_SECRET" >> $GITHUB_OUTPUT
+        
+        echo "✅ Successfully retrieved all secrets"
+
+    - name: Install Helm on K3s master
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Installing Helm on master: $FIRST_MASTER"
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
+          --parameters 'commands=[
+            "if command -v helm &> /dev/null; then echo \"Helm already installed\"; helm version; exit 0; fi",
+            "echo \"Installing Helm...\"",
+            "curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3",
+            "chmod 700 get_helm.sh",
+            "./get_helm.sh",
+            "helm version"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --cli-read-timeout 300
+        
+        echo "Helm installation completed"
+
+    - name: Deploy FitSync Helm Chart
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Deploying FitSync Helm chart to namespace: ${{ inputs.namespace }}"
+        
+        # Create values file with secrets
+        cat > values-override.yaml << EOF
+        global:
+          environment: "${{ inputs.environment }}"
+          
+        userService:
+          env:
+            DATABASE_URL: "${{ steps.get-secrets.outputs.user_db_url }}"
+            JWT_SECRET: "${{ steps.get-secrets.outputs.jwt_secret }}"
+            JWT_REFRESH_SECRET: "${{ steps.get-secrets.outputs.jwt_refresh_secret }}"
+            REDIS_URL: "${{ steps.get-secrets.outputs.redis_url }}"
+            
+        trainingService:
+          env:
+            DATABASE_URL: "${{ steps.get-secrets.outputs.training_db_url }}"
+            JWT_SECRET: "${{ steps.get-secrets.outputs.jwt_secret }}"
+            REDIS_URL: "${{ steps.get-secrets.outputs.redis_url }}"
+            
+        scheduleService:
+          env:
+            DATABASE_URL: "${{ steps.get-secrets.outputs.schedule_db_url }}"
+            JWT_SECRET: "${{ steps.get-secrets.outputs.jwt_secret }}"
+            REDIS_URL: "${{ steps.get-secrets.outputs.redis_url }}"
+            
+        progressService:
+          env:
+            DATABASE_URL: "${{ steps.get-secrets.outputs.progress_db_url }}"
+            JWT_SECRET: "${{ steps.get-secrets.outputs.jwt_secret }}"
+            REDIS_URL: "${{ steps.get-secrets.outputs.redis_url }}"
+            
+        apiGateway:
+          env:
+            JWT_SECRET: "${{ steps.get-secrets.outputs.jwt_secret }}"
+            REDIS_URL: "${{ steps.get-secrets.outputs.redis_url }}"
+        EOF
+        
+        # Copy chart and values to master
+        CHART_TAR=$(tar -czf - fitsync-helm-chart | base64 -w 0)
+        VALUES_CONTENT=$(base64 -w 0 values-override.yaml)
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 600 \
+          --parameters "commands=[
+            \"echo 'Extracting Helm chart...'\"
+            \"echo '$CHART_TAR' | base64 -d | tar -xzf -\",
+            \"echo '$VALUES_CONTENT' | base64 -d > values-override.yaml\",
+            \"export KUBECONFIG=/etc/rancher/k3s/k3s.yaml\",
+            \"echo 'Creating namespace if not exists...'\",
+            \"kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -\",
+            \"echo 'Deploying FitSync Helm chart...'\",
+            \"helm upgrade --install fitsync ./fitsync-helm-chart/fitsync \\
+              --namespace ${{ inputs.namespace }} \\
+              --values ./fitsync-helm-chart/fitsync/values.yaml \\
+              --values values-override.yaml \\
+              --wait --timeout=10m\",
+            \"echo 'Deployment completed successfully'\",
+            \"kubectl get pods -n ${{ inputs.namespace }}\",
+            \"kubectl get services -n ${{ inputs.namespace }}\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Waiting for Helm deployment..."
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --cli-read-timeout 600
+        
+        # Get deployment output
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
+
+    - name: Restart pods for secret updates
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Restarting pods to ensure secret updates..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
+          --parameters "commands=[
+            \"export KUBECONFIG=/etc/rancher/k3s/k3s.yaml\",
+            \"echo 'Rolling restart of all deployments...'\",
+            \"kubectl rollout restart deployment -n ${{ inputs.namespace }}\",
+            \"echo 'Waiting for rollout to complete...'\",
+            \"kubectl rollout status deployment -n ${{ inputs.namespace }} --timeout=300s\",
+            \"echo 'Rollout completed successfully'\",
+            \"kubectl get pods -n ${{ inputs.namespace }}\",
+            \"echo 'Checking pod readiness...'\",
+            \"kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=fitsync -n ${{ inputs.namespace }} --timeout=300s\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --cli-read-timeout 300
+        
+        echo "✅ Pod restart completed successfully"
+
+    - name: Verify deployment
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying FitSync deployment..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters "commands=[
+            \"export KUBECONFIG=/etc/rancher/k3s/k3s.yaml\",
+            \"echo '=== Helm Release Status ==='\",
+            \"helm status fitsync -n ${{ inputs.namespace }}\",
+            \"echo '=== Pod Status ==='\",
+            \"kubectl get pods -n ${{ inputs.namespace }} -o wide\",
+            \"echo '=== Service Status ==='\",
+            \"kubectl get services -n ${{ inputs.namespace }}\",
+            \"echo '=== Ingress Status ==='\",
+            \"kubectl get ingress -n ${{ inputs.namespace }} || echo 'No ingress found'\",
+            \"echo '=== VirtualService Status ==='\",
+            \"kubectl get virtualservice -n ${{ inputs.namespace }} || echo 'No VirtualService found'\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
