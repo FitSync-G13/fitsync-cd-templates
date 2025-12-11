@@ -469,7 +469,14 @@ jobs:
             \"redis-cli shutdown nosave || true\",
             \"sleep 2\",
             \"systemctl start postgresql\",
-            \"systemctl start redis-server\"
+            \"systemctl start redis-server\",
+            \"sleep 5\",
+            \"# Ensure PostgreSQL certificates are in place\",
+            \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.crt || true\",
+            \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.key || true\",
+            \"chown postgres:postgres /mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.* || true\",
+            \"chmod 600 /mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.key || true\",
+            \"systemctl restart postgresql\"
           ]" \
           --output text \
           --query "Command.CommandId" > /tmp/cmd_id.txt
