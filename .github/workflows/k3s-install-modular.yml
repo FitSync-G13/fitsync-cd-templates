@@ -97,21 +97,19 @@ jobs:
               \"chmod +x ecr-credential-provider-linux-amd64\",
               \"sudo mv ecr-credential-provider-linux-amd64 /usr/local/bin/ecr-credential-provider\",
               \"sudo mkdir -p /etc/kubernetes\",
-              \"sudo tee /etc/kubernetes/ecr-credential-provider.json > /dev/null <<EOF
-{
-  \\\"providers\\\": [
-    {
-      \\\"name\\\": \\\"ecr-credential-provider\\\",
-      \\\"matchImages\\\": [
-        \\\"*.dkr.ecr.*.amazonaws.com\\\",
-        \\\"*.dkr.ecr.*.amazonaws.com.cn\\\"
-      ],
-      \\\"apiVersion\\\": \\\"credentialprovider.kubelet.k8s.io/v1\\\",
-      \\\"defaultCacheDuration\\\": \\\"12h\\\"
-    }
-  ]
-}
-EOF\",
+              \"echo '{' | sudo tee /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '  \\\"providers\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '    {' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '      \\\"name\\\": \\\"ecr-credential-provider\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '      \\\"matchImages\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '        \\\"*.dkr.ecr.*.amazonaws.com\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '        \\\"*.dkr.ecr.*.amazonaws.com.cn\\\"' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '      ],' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '      \\\"apiVersion\\\": \\\"credentialprovider.kubelet.k8s.io/v1\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '      \\\"defaultCacheDuration\\\": \\\"12h\\\"' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '    }' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '  ]' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+              \"echo '}' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
               \"echo 'ECR credential provider installed successfully'\"
             ]" \
             --query 'Command.CommandId' \
@@ -270,21 +268,19 @@ EOF\",
                 \"chmod +x ecr-credential-provider-linux-amd64\",
                 \"sudo mv ecr-credential-provider-linux-amd64 /usr/local/bin/ecr-credential-provider\",
                 \"sudo mkdir -p /etc/kubernetes\",
-                \"sudo tee /etc/kubernetes/ecr-credential-provider.json > /dev/null <<EOF
-{
-  \\\"providers\\\": [
-    {
-      \\\"name\\\": \\\"ecr-credential-provider\\\",
-      \\\"matchImages\\\": [
-        \\\"*.dkr.ecr.*.amazonaws.com\\\",
-        \\\"*.dkr.ecr.*.amazonaws.com.cn\\\"
-      ],
-      \\\"apiVersion\\\": \\\"credentialprovider.kubelet.k8s.io/v1\\\",
-      \\\"defaultCacheDuration\\\": \\\"12h\\\"
-    }
-  ]
-}
-EOF\",
+                \"echo '{' | sudo tee /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '  \\\"providers\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '    {' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '      \\\"name\\\": \\\"ecr-credential-provider\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '      \\\"matchImages\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '        \\\"*.dkr.ecr.*.amazonaws.com\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '        \\\"*.dkr.ecr.*.amazonaws.com.cn\\\"' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '      ],' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '      \\\"apiVersion\\\": \\\"credentialprovider.kubelet.k8s.io/v1\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '      \\\"defaultCacheDuration\\\": \\\"12h\\\"' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '    }' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '  ]' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '}' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
                 \"echo 'ECR credential provider installed successfully'\"
               ]" \
               --query 'Command.CommandId' \
