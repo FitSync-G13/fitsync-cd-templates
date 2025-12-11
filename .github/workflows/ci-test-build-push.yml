@@ -110,6 +110,11 @@ jobs:
       # Run Tests (Python)
       - name: Install & Test (Python)
         if: ${{ inputs.run_tests && inputs.language == 'python' }}
+        env:
+          # Dummy values to satisfy main.py startup checks
+          DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
+          REDIS_HOST: "localhost"
+          JWT_SECRET: "dummy-secret-for-testing"
         run: |
           # Use input command OR default to requirements.txt install
           INSTALL_CMD="${{ inputs.install_command }}"
