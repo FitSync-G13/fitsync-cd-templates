@@ -94,8 +94,8 @@ jobs:
             "UUID=$(blkid -s UUID -o value $DEVICE)",
             "grep -q \"$UUID\" /etc/fstab || echo \"UUID=$UUID /mnt/data ext4 defaults,nofail 0 2\" >> /etc/fstab",
             "echo \"Creating directory structure...\"",
-            "mkdir -p /mnt/data/postgresql /mnt/data/redis /mnt/data/backups",
-            "chown -R root:root /mnt/data",
+            "mkdir -p /mnt/data/postgresql /mnt/data/backups",
+            "chown root:root /mnt/data",
             "chmod 755 /mnt/data",
             "echo \"Mount completed successfully:\"",
             "df -h /mnt/data",
@@ -157,8 +157,8 @@ jobs:
             "  if [ -d /var/lib/postgresql/${{ inputs.postgres_version }}/main ] && [ \"$(ls -A /var/lib/postgresql/${{ inputs.postgres_version }}/main)\" ]; then",
             "    cp -a /var/lib/postgresql/${{ inputs.postgres_version }}/main /mnt/data/postgresql/${{ inputs.postgres_version }}/",
             "  fi",
-            "  chown -R postgres:postgres /mnt/data/postgresql",
             "fi",
+            "chown -R postgres:postgres /mnt/data/postgresql",
             "sed -i \"s|data_directory = .*|data_directory = '\''/mnt/data/postgresql/${{ inputs.postgres_version }}/main'\''|\" /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf",
             "systemctl enable postgresql",
             "systemctl start postgresql"
@@ -351,8 +351,6 @@ jobs:
             "apt update",
             "apt install -y redis-server",
             "systemctl stop redis-server",
-            "mkdir -p /mnt/data/redis",
-            "chown redis:redis /mnt/data/redis",
             "systemctl enable redis-server",
             "systemctl start redis-server"
           ]' \
