@@ -58,8 +58,87 @@ permissions:
   contents: read
 
 jobs:
+  install-ecr-credential-provider:
+    if: ${{ inputs.install_masters || inputs.install_workers }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-ECR-Provider
+
+    - name: Install ECR credential provider on all nodes
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        WORKER_INSTANCES="${{ inputs.worker_instances }}"
+        ECR_VERSION="${{ inputs.ecr_credential_provider_version }}"
+        
+        # Get latest version if not specified
+        if [ "$ECR_VERSION" = "latest" ]; then
+          ECR_VERSION=$(curl -s https://api.github.com/repos/dntosas/ecr-credential-provider/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "Using ECR credential provider version: $ECR_VERSION"
+        fi
+        
+        # Combine all instances
+        ALL_INSTANCES=""
+        if [ -n "$MASTER_INSTANCES" ]; then
+          ALL_INSTANCES="$MASTER_INSTANCES"
+        fi
+        if [ -n "$WORKER_INSTANCES" ]; then
+          if [ -n "$ALL_INSTANCES" ]; then
+            ALL_INSTANCES="$ALL_INSTANCES,$WORKER_INSTANCES"
+          else
+            ALL_INSTANCES="$WORKER_INSTANCES"
+          fi
+        fi
+        
+        if [ -n "$ALL_INSTANCES" ]; then
+          IFS=',' read -ra INSTANCES <<< "$ALL_INSTANCES"
+          for instance in "${INSTANCES[@]}"; do
+            echo "Installing ECR credential provider on instance: $instance"
+            
+            COMMAND_ID=$(aws ssm send-command \
+              --instance-ids "$instance" \
+              --document-name "AWS-RunShellScript" \
+              --parameters "commands=[
+                \"echo 'Installing ECR credential provider...'\",
+                \"wget -q https://github.com/dntosas/ecr-credential-provider/releases/download/$ECR_VERSION/ecr-credential-provider-linux-amd64\",
+                \"chmod +x ecr-credential-provider-linux-amd64\",
+                \"sudo mv ecr-credential-provider-linux-amd64 /usr/local/bin/ecr-credential-provider\",
+                \"sudo mkdir -p /etc/kubernetes\",
+                \"echo '{' | sudo tee /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '  \\\"providers\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '    {' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '      \\\"name\\\": \\\"ecr-credential-provider\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '      \\\"matchImages\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '        \\\"*.dkr.ecr.*.amazonaws.com\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '        \\\"*.dkr.ecr.*.amazonaws.com.cn\\\"' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '      ],' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '      \\\"apiVersion\\\": \\\"credentialprovider.kubelet.k8s.io/v1\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '      \\\"defaultCacheDuration\\\": \\\"12h\\\"' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '    }' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '  ]' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo '}' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
+                \"echo 'ECR credential provider installed successfully'\"
+              ]" \
+              --query 'Command.CommandId' \
+              --output text)
+            
+            aws ssm wait command-executed \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$instance"
+            
+            echo "ECR credential provider installed on $instance"
+          done
+        fi
+
   install-k3s-masters:
     if: ${{ inputs.install_masters }}
+    needs: install-ecr-credential-provider
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     outputs:
@@ -72,55 +151,6 @@ jobs:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region: ${{ vars.AWS_REGION }}
         role-session-name: GitHubActions-K3s-Masters
-
-    - name: Install ECR credential provider on masters
-      run: |
-        MASTER_INSTANCES="${{ inputs.master_instances }}"
-        ECR_VERSION="${{ inputs.ecr_credential_provider_version }}"
-        
-        # Get latest version if not specified
-        if [ "$ECR_VERSION" = "latest" ]; then
-          ECR_VERSION=$(curl -s https://api.github.com/repos/dntosas/ecr-credential-provider/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "Using ECR credential provider version: $ECR_VERSION"
-        fi
-        
-        IFS=',' read -ra MASTERS <<< "$MASTER_INSTANCES"
-        for master in "${MASTERS[@]}"; do
-          echo "Installing ECR credential provider on master: $master"
-          
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$master" \
-            --document-name "AWS-RunShellScript" \
-            --parameters "commands=[
-              \"echo 'Installing ECR credential provider...'\",
-              \"wget -q https://github.com/dntosas/ecr-credential-provider/releases/download/$ECR_VERSION/ecr-credential-provider-linux-amd64\",
-              \"chmod +x ecr-credential-provider-linux-amd64\",
-              \"sudo mv ecr-credential-provider-linux-amd64 /usr/local/bin/ecr-credential-provider\",
-              \"sudo mkdir -p /etc/kubernetes\",
-              \"echo '{' | sudo tee /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '  \\\"providers\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '    {' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '      \\\"name\\\": \\\"ecr-credential-provider\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '      \\\"matchImages\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '        \\\"*.dkr.ecr.*.amazonaws.com\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '        \\\"*.dkr.ecr.*.amazonaws.com.cn\\\"' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '      ],' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '      \\\"apiVersion\\\": \\\"credentialprovider.kubelet.k8s.io/v1\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '      \\\"defaultCacheDuration\\\": \\\"12h\\\"' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '    }' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '  ]' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo '}' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-              \"echo 'ECR credential provider installed successfully'\"
-            ]" \
-            --query 'Command.CommandId' \
-            --output text)
-          
-          aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$master"
-          
-          echo "ECR credential provider installed on $master"
-        done
 
     - name: Install K3s on first master
       run: |
@@ -231,7 +261,7 @@ jobs:
 
   install-k3s-workers:
     if: ${{ always() && inputs.install_workers }}
-    needs: install-k3s-masters
+    needs: [install-ecr-credential-provider, install-k3s-masters]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     
@@ -242,57 +272,6 @@ jobs:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region: ${{ vars.AWS_REGION }}
         role-session-name: GitHubActions-K3s-Workers
-
-    - name: Install ECR credential provider on workers
-      run: |
-        WORKER_INSTANCES="${{ inputs.worker_instances }}"
-        ECR_VERSION="${{ inputs.ecr_credential_provider_version }}"
-        
-        # Get latest version if not specified
-        if [ "$ECR_VERSION" = "latest" ]; then
-          ECR_VERSION=$(curl -s https://api.github.com/repos/dntosas/ecr-credential-provider/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "Using ECR credential provider version: $ECR_VERSION"
-        fi
-        
-        if [ -n "$WORKER_INSTANCES" ] && [ "$WORKER_INSTANCES" != "" ]; then
-          IFS=',' read -ra WORKERS <<< "$WORKER_INSTANCES"
-          for worker in "${WORKERS[@]}"; do
-            echo "Installing ECR credential provider on worker: $worker"
-            
-            COMMAND_ID=$(aws ssm send-command \
-              --instance-ids "$worker" \
-              --document-name "AWS-RunShellScript" \
-              --parameters "commands=[
-                \"echo 'Installing ECR credential provider...'\",
-                \"wget -q https://github.com/dntosas/ecr-credential-provider/releases/download/$ECR_VERSION/ecr-credential-provider-linux-amd64\",
-                \"chmod +x ecr-credential-provider-linux-amd64\",
-                \"sudo mv ecr-credential-provider-linux-amd64 /usr/local/bin/ecr-credential-provider\",
-                \"sudo mkdir -p /etc/kubernetes\",
-                \"echo '{' | sudo tee /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '  \\\"providers\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '    {' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '      \\\"name\\\": \\\"ecr-credential-provider\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '      \\\"matchImages\\\": [' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '        \\\"*.dkr.ecr.*.amazonaws.com\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '        \\\"*.dkr.ecr.*.amazonaws.com.cn\\\"' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '      ],' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '      \\\"apiVersion\\\": \\\"credentialprovider.kubelet.k8s.io/v1\\\",' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '      \\\"defaultCacheDuration\\\": \\\"12h\\\"' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '    }' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '  ]' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo '}' | sudo tee -a /etc/kubernetes/ecr-credential-provider.json > /dev/null\",
-                \"echo 'ECR credential provider installed successfully'\"
-              ]" \
-              --query 'Command.CommandId' \
-              --output text)
-            
-            aws ssm wait command-executed \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$worker"
-            
-            echo "ECR credential provider installed on $worker"
-          done
-        fi
 
     - name: Get K3s token from existing cluster
       id: get-token
@@ -389,7 +368,7 @@ jobs:
 
   verify-cluster:
     if: ${{ always() && inputs.verify_cluster }}
-    needs: [install-k3s-masters, install-k3s-workers]
+    needs: [install-ecr-credential-provider, install-k3s-masters, install-k3s-workers]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     
