@@ -149,6 +149,9 @@ jobs:
         cat > "$TEMP_VALUES" << 'EOF'
         global:
           environment: "${{ inputs.environment }}"
+          imageRegistry: "074094370475.dkr.ecr.us-east-2.amazonaws.com"
+          imageTag: "latest"
+          imagePullPolicy: "Always"
           
         userService:
           env:
@@ -179,6 +182,11 @@ jobs:
           env:
             JWT_SECRET: "JWT_SECRET_PLACEHOLDER"
             REDIS_URL: "REDIS_URL_PLACEHOLDER"
+
+        istio:
+          virtualService:
+            hosts:
+              - "*"
         EOF
         
         # Replace placeholders with actual values
