@@ -161,15 +161,32 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run Trivy Scanner
+      - name: Run Trivy Scanner (Console)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: '${{ inputs.ecr_repository }}:${{ github.sha }}'
           format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          trivyignores: .trivyignore
+
+      - name: Trivy Scan (SARIF Generation)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ inputs.ecr_repository }}:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
           exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
           trivyignores: .trivyignore
+
+      - name: Upload Trivy Results to Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
 
       - name: Build and Push
         if: ${{ inputs.push_image }}
