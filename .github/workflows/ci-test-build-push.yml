@@ -1,0 +1,181 @@
+name: "Standard CI: Test, Build, Scan & Push"
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: 'Name of the service (used for tagging)'
+        required: true
+        type: string
+      ecr_repository:
+        description: 'Name of the ECR repository'
+        required: true
+        type: string
+      aws_region:
+        description: 'AWS Region'
+        required: false
+        default: 'us-east-2'
+        type: string
+      dockerfile_context:
+        description: 'Path to docker context'
+        required: false
+        default: '.'
+        type: string
+      push_image:
+        description: 'Push to ECR (Set false for local-only testing)'
+        required: false
+        default: false
+        type: boolean
+      run_tests:
+        description: 'Enable unit tests'
+        required: false
+        type: boolean
+        default: true
+      language:
+        description: 'Runtime language (node/python)'
+        required: false
+        default: 'node'
+        type: string
+      node_version:
+        description: 'Node.js version'
+        required: false
+        default: '18'
+        type: string
+      python_version:
+        description: 'Python version'
+        required: false
+        default: '3.11'
+        type: string
+      install_command:
+        description: 'Command to install dependencies'
+        required: false
+        type: string
+        default: ''
+      test_command:
+        description: 'Command to run tests'
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      AWS_ROLE_ARN:
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+
+jobs:
+  build-test-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      # Setup Node.js Environment
+      - name: Setup Node.js
+        if: ${{ inputs.run_tests && inputs.language == 'node' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: 'npm'
+
+      # Setup Python Environment
+      - name: Setup Python
+        if: ${{ inputs.run_tests && inputs.language == 'python' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: 'pip'
+
+      # Run Tests (Node.js)
+      - name: Install & Test (Node.js)
+        if: ${{ inputs.run_tests && inputs.language == 'node' }}
+        run: |
+          # Use input command OR default to 'npm ci'
+          INSTALL_CMD="${{ inputs.install_command }}"
+          if [ -z "$INSTALL_CMD" ]; then INSTALL_CMD="npm ci"; fi
+          
+          # Use input command OR default to 'npm test'
+          TEST_CMD="${{ inputs.test_command }}"
+          if [ -z "$TEST_CMD" ]; then TEST_CMD="npm test"; fi
+          
+          echo "Installing with: $INSTALL_CMD"
+          $INSTALL_CMD
+          
+          echo "Testing with: $TEST_CMD"
+          $TEST_CMD
+
+      # Run Tests (Python)
+      - name: Install & Test (Python)
+        if: ${{ inputs.run_tests && inputs.language == 'python' }}
+        run: |
+          # Use input command OR default to requirements.txt install
+          INSTALL_CMD="${{ inputs.install_command }}"
+          if [ -z "$INSTALL_CMD" ]; then INSTALL_CMD="pip install -r requirements.txt"; fi
+          
+          # Use input command OR default to 'pytest'
+          TEST_CMD="${{ inputs.test_command }}"
+          if [ -z "$TEST_CMD" ]; then TEST_CMD="pytest tests/"; fi
+          
+          echo "Installing with: $INSTALL_CMD"
+          $INSTALL_CMD
+          
+          echo "Testing with: $TEST_CMD"
+          $TEST_CMD
+
+      # Build Docker Image and Push to ECR
+      - name: Generate Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ inputs.ecr_repository }}
+          tags: |
+            type=sha,prefix=dev-,format=short,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=raw,value=dev-latest,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=sha,prefix=prod-,format=short,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: GHA-CI-${{ inputs.service_name }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Load
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.dockerfile_context }}
+          load: true
+          tags: ${{ inputs.ecr_repository }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ inputs.ecr_repository }}:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          trivyignores: .trivyignore
+
+      - name: Build and Push
+        if: ${{ inputs.push_image }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.dockerfile_context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
