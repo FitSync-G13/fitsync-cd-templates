@@ -167,7 +167,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run Trivy Scanner (Console)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.30.0
         with:
           image-ref: '${{ inputs.ecr_repository }}:${{ github.sha }}'
           format: 'table'
@@ -177,7 +177,7 @@ jobs:
           trivyignores: .trivyignore
 
       - name: Trivy Scan (SARIF Generation)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.30.0
         with:
           image-ref: '${{ inputs.ecr_repository }}:${{ github.sha }}'
           format: 'sarif'
