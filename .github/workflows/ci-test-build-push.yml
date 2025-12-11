@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       ecr_repository:
-        description: 'Name of the ECR repository'
+        description: 'Name of the ECR repository (just the name, not full URI)'
         required: true
         type: string
       aws_region:
@@ -23,8 +23,8 @@ on:
         type: string
       push_image:
         description: 'Push to ECR (Set false for local-only testing)'
-        required: false
-        default: false
+        required: true
+        default: true
         type: boolean
       run_tests:
         description: 'Enable unit tests'
@@ -56,24 +56,36 @@ on:
         required: false
         type: string
         default: ''
+      fail_on_vulnerabilities:
+        description: 'Fail build on CRITICAL/HIGH vulnerabilities'
+        required: false
+        type: boolean
+        default: false
 
     secrets:
       AWS_ROLE_ARN:
-        required: false
+        required: true
 
 permissions:
   id-token: write
   contents: read
   security-events: write
 
+env:
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
 jobs:
   build-test-push:
     runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+      image-uri: ${{ steps.image-info.outputs.image-uri }}
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
       
-      # Setup Node.js Environment
       - name: Setup Node.js
         if: ${{ inputs.run_tests && inputs.language == 'node' }}
         uses: actions/setup-node@v4
@@ -81,7 +93,6 @@ jobs:
           node-version: ${{ inputs.node_version }}
           cache: 'npm'
 
-      # Setup Python Environment
       - name: Setup Python
         if: ${{ inputs.run_tests && inputs.language == 'python' }}
         uses: actions/setup-python@v5
@@ -89,15 +100,12 @@ jobs:
           python-version: ${{ inputs.python_version }}
           cache: 'pip'
 
-      # Run Tests (Node.js)
       - name: Install & Test (Node.js)
         if: ${{ inputs.run_tests && inputs.language == 'node' }}
         run: |
-          # Use input command OR default to 'npm ci'
           INSTALL_CMD="${{ inputs.install_command }}"
           if [ -z "$INSTALL_CMD" ]; then INSTALL_CMD="npm ci"; fi
           
-          # Use input command OR default to 'npm test'
           TEST_CMD="${{ inputs.test_command }}"
           if [ -z "$TEST_CMD" ]; then TEST_CMD="npm test"; fi
           
@@ -107,20 +115,16 @@ jobs:
           echo "Testing with: $TEST_CMD"
           $TEST_CMD
 
-      # Run Tests (Python)
       - name: Install & Test (Python)
         if: ${{ inputs.run_tests && inputs.language == 'python' }}
         env:
-          # Dummy values to satisfy main.py startup checks
           DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
           REDIS_HOST: "localhost"
           JWT_SECRET: "dummy-secret-for-testing"
         run: |
-          # Use input command OR default to requirements.txt install
           INSTALL_CMD="${{ inputs.install_command }}"
           if [ -z "$INSTALL_CMD" ]; then INSTALL_CMD="pip install -r requirements.txt"; fi
           
-          # Use input command OR default to 'pytest'
           TEST_CMD="${{ inputs.test_command }}"
           if [ -z "$TEST_CMD" ]; then TEST_CMD="pytest tests/"; fi
           
@@ -129,72 +133,107 @@ jobs:
           
           echo "Testing with: $TEST_CMD"
           $TEST_CMD
-
-      # Build Docker Image and Push to ECR
+      
       - name: Generate Docker Metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ inputs.ecr_repository }}
+          images: ${{ env.ECR_REGISTRY }}/${{ inputs.ecr_repository }}
           tags: |
+            # Production tags (main branch)
+            type=sha,prefix=prod-,format=short,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=prod-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            
+            # Development tags (dev branch)
             type=sha,prefix=dev-,format=short,enable=${{ github.ref == 'refs/heads/dev' }}
             type=raw,value=dev-latest,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=sha,prefix=prod-,format=short,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            
+            # Pull request tags
+            type=ref,event=pr,prefix=pr-
+          
+          labels: |
+            org.opencontainers.image.title=${{ inputs.service_name }}
+            org.opencontainers.image.description=${{ inputs.service_name }}
+            com.fitsync.service=${{ inputs.service_name }}
 
-      # - name: Configure AWS credentials
-      #   if: ${{ inputs.push_image }}
-      #   uses: aws-actions/configure-aws-credentials@v4
-      #   with:
-      #     role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-      #     aws-region: ${{ inputs.aws_region }}
-      #     role-session-name: GHA-CI-${{ inputs.service_name }}
+      - name: Set Image Info
+        id: image-info
+        run: |
+          # Extract primary tag from metadata
+          PRIMARY_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1 | cut -d':' -f2)
+          IMAGE_URI="${{ env.ECR_REGISTRY }}/${{ inputs.ecr_repository }}:${PRIMARY_TAG}"
+          
+          echo "image-uri=${IMAGE_URI}" >> $GITHUB_OUTPUT
+          echo "primary-tag=${PRIMARY_TAG}" >> $GITHUB_OUTPUT
+          
+          # Determine environment
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+          else
+            echo "environment=development" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GHA-${{ inputs.service_name }}-${{ github.run_id }}
 
-      # - name: Login to Amazon ECR
-      #   id: login-ecr
-      #   uses: aws-actions/amazon-ecr-login@v2
-
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and Load
+      - name: Build and Load for Scanning
         uses: docker/build-push-action@v5
         with:
           context: ${{ inputs.dockerfile_context }}
           load: true
-          tags: ${{ inputs.ecr_repository }}:${{ github.sha }}
+          tags: local-scan:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run Trivy Scanner (Console)
+      - name: Run Trivy Vulnerability Scanner
         uses: aquasecurity/trivy-action@0.30.0
         with:
-          image-ref: '${{ inputs.ecr_repository }}:${{ github.sha }}'
+          image-ref: 'local-scan:${{ github.sha }}'
           format: 'table'
           exit-code: '0'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
-          trivyignores: .trivyignore
 
-      - name: Trivy Scan (SARIF Generation)
+      - name: Run Trivy Scan (SARIF for GitHub)
         uses: aquasecurity/trivy-action@0.30.0
+        continue-on-error: true
         with:
-          image-ref: '${{ inputs.ecr_repository }}:${{ github.sha }}'
+          image-ref: 'local-scan:${{ github.sha }}'
           format: 'sarif'
           output: 'trivy-results.sarif'
-          exit-code: '0'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
-          trivyignores: .trivyignore
 
-      - name: Upload Trivy Results to Security Tab
+      - name: Upload Trivy Results
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: 'trivy-results.sarif'
 
-      - name: Build and Push
+      - name: Fail on Critical Vulnerabilities
+        if: ${{ inputs.fail_on_vulnerabilities }}
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: 'local-scan:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Build and Push to ECR
         if: ${{ inputs.push_image }}
+        id: docker-push
         uses: docker/build-push-action@v5
         with:
           context: ${{ inputs.dockerfile_context }}
@@ -202,3 +241,22 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image Summary
+        if: ${{ inputs.push_image }}
+        run: |
+          echo "### ✅ Image Published to ECR" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** \`${{ inputs.service_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ steps.image-info.outputs.image-uri }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** \`${{ steps.image-info.outputs.environment }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**All Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Clean up
+        if: always()
+        run: docker rmi local-scan:${{ github.sha }} || true
