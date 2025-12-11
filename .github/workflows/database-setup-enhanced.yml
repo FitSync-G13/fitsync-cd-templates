@@ -438,10 +438,14 @@ jobs:
           --document-name "AWS-RunShellScript" \
           --parameters commands="[
             \"# Configure PostgreSQL TLS\",
+            \"echo 'Copying PostgreSQL certificates...'\",
+            \"ls -la /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/\",
             \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/fullchain.pem /mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.crt\",
             \"cp /etc/letsencrypt/live/${{ vars.DB_PRIVATE_DNS }}/privkey.pem /mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.key\",
             \"chown postgres:postgres /mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.*\",
             \"chmod 600 /mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.key\",
+            \"ls -la /mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.*\",
+            \"echo 'PostgreSQL certificates copied successfully'\",
             \"grep -q '^ssl = on' /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf || sed -i 's/#ssl = off/ssl = on/' /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf\",
             \"sed -i \\\"s|^ssl_cert_file = .*|ssl_cert_file = '/mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.crt'|\\\" /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf\",
             \"sed -i \\\"s|^ssl_key_file = .*|ssl_key_file = '/mnt/data/postgresql/${{ inputs.postgres_version }}/main/server.key'|\\\" /etc/postgresql/${{ inputs.postgres_version }}/main/postgresql.conf\",
