@@ -452,6 +452,8 @@ jobs:
             \"chown redis:redis /etc/redis/certs/*\",
             \"chmod 600 /etc/redis/certs/server.key\",
             \"grep -q '^port 0' /etc/redis/redis.conf || sed -i 's/^port 6379/port 0/' /etc/redis/redis.conf\",
+            \"grep -q '^bind 0.0.0.0' /etc/redis/redis.conf || sed -i 's/^bind 127.0.0.1.*/bind 0.0.0.0/' /etc/redis/redis.conf\",
+            \"grep -q '^protected-mode no' /etc/redis/redis.conf || echo 'protected-mode no' >> /etc/redis/redis.conf\",
             \"grep -q '^tls-port' /etc/redis/redis.conf || echo 'tls-port 6379' >> /etc/redis/redis.conf\",
             \"grep -q '^tls-cert-file' /etc/redis/redis.conf || echo 'tls-cert-file /etc/redis/certs/server.crt' >> /etc/redis/redis.conf\",
             \"grep -q '^tls-key-file' /etc/redis/redis.conf || echo 'tls-key-file /etc/redis/certs/server.key' >> /etc/redis/redis.conf\",
