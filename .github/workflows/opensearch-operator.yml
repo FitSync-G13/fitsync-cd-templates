@@ -1,0 +1,79 @@
+name: OpenSearch Operator Install
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'OpenSearch K3s cluster name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of OpenSearch master instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-opensearch-operator:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-OpenSearch-Operator
+
+    - name: Install OpenSearch Operator
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Installing OpenSearch Operator..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 600 \
+          --parameters 'commands=[
+            "echo \"Installing OpenSearch Operator...\"",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/config/crd/bases/opensearch.opster.io_opensearchclusters.yaml",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/config/crd/bases/opensearch.opster.io_opensearchroles.yaml",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/config/crd/bases/opensearch.opster.io_opensearchusers.yaml",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/config/crd/bases/opensearch.opster.io_opensearchuserrolesbindings.yaml",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/config/crd/bases/opensearch.opster.io_opensearchactiongroups.yaml",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/config/crd/bases/opensearch.opster.io_opensearchtenants.yaml",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/config/crd/bases/opensearch.opster.io_opensearchismtemplates.yaml",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/config/crd/bases/opensearch.opster.io_opensearchismpolicies.yaml",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/config/crd/bases/opensearch.opster.io_opensearchcomponenttemplates.yaml",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/config/crd/bases/opensearch.opster.io_opensearchindextemplates.yaml",
+            "sudo k3s kubectl apply -f https://raw.githubusercontent.com/opensearch-project/opensearch-k8s-operator/main/opensearch-operator/opensearch-operator.yaml",
+            "echo \"Waiting for OpenSearch Operator to be ready...\"",
+            "sudo k3s kubectl wait --for=condition=ready pod -l control-plane=opensearch-operator-controller-manager -n opensearch-operator-system --timeout=300s",
+            "echo \"OpenSearch Operator installed successfully\""
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
