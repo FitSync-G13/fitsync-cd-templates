@@ -249,6 +249,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
+      - name: Start Dummy Infrastructure
+        run: |
+          docker run -d --name postgres-dummy \
+            -e POSTGRES_USER=dummy \
+            -e POSTGRES_PASSWORD=dummy \
+            -e POSTGRES_DB=dummy \
+            -p 5432:5432 \
+            postgres:alpine
+
+          docker run -d --name redis-dummy \
+            -p 6379:6379 \
+            redis:alpine
+          
+          sleep 5
+      
       - name: Build Docker Image
         uses: docker/build-push-action@v5
         with:
@@ -261,8 +276,10 @@ jobs:
         run: |
           echo "Starting container..."
           docker run -d --name test-container \
+            -- network host \
             -e DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
             -e REDIS_HOST="localhost" \
+            -e REDIS_PORT="6379" \
             -e JWT_SECRET="test-secret-key" \
             -e NODE_ENV="test" \
             pr-build-verify:${{ github.event.pull_request.number }}
