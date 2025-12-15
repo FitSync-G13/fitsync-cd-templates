@@ -256,7 +256,7 @@ jobs:
           load: true
           tags: pr-build-verify:${{ github.event.pull_request.number }}
           cache-from: type=gha
-
+      
       - name: Test Container Startup
         run: |
           echo "Starting container..."
@@ -338,7 +338,7 @@ jobs:
   pr-status:
     name: PR Status Summary
     runs-on: ubuntu-latest
-    needs: [tests-and-quality, security-scan, build-verification]
+    needs: [tests-and-quality, security-scan, build-verification, e2e-tests]
     if: always()
     steps:
       - name: Check All Gates
@@ -348,14 +348,18 @@ jobs:
           TESTS_STATUS="${{ needs.tests-and-quality.result }}"
           SECURITY_STATUS="${{ needs.security-scan.result }}"
           BUILD_STATUS="${{ needs.build-verification.result }}"
+          E2E_STATUS="${{ needs.e2e-tests.result }}"
           
           echo "Tests: $TESTS_STATUS"
           echo "Security: $SECURITY_STATUS"
           echo "Build: $BUILD_STATUS"
+          echo "E2E: $E2E_STATUS"
           
+          # Check if any required job failed
           if [ "$TESTS_STATUS" != "success" ] || \
-             [ "$SECURITY_STATUS" != "success" ] && [ "$SECURITY_STATUS" != "skipped" ] || \
-             [ "$BUILD_STATUS" != "success" ]; then
+             ([ "$SECURITY_STATUS" != "success" ] && [ "$SECURITY_STATUS" != "skipped" ]) || \
+             [ "$BUILD_STATUS" != "success" ] || \
+             ([ "$E2E_STATUS" != "success" ] && [ "$E2E_STATUS" != "skipped" ]); then
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           else
@@ -376,6 +380,7 @@ jobs:
             | 🧪 Tests & Code Quality | ✅ Passed |
             | 🔒 Security Scan | ✅ Passed |
             | 🏗️ Build Verification | ✅ Passed |
+            | 🎭 E2E Tests | ${{ needs.e2e-tests.result == 'success' && '✅ Passed' || needs.e2e-tests.result == 'skipped' && '⏭️ Skipped (dev branch)' || '❌ Failed' }} |
             
             **Service:** \`${{ inputs.service_name }}\`
             
@@ -402,6 +407,7 @@ jobs:
             | 🧪 Tests & Code Quality | ${{ needs.tests-and-quality.result == 'success' && '✅ Passed' || '❌ Failed' }} |
             | 🔒 Security Scan | ${{ needs.security-scan.result == 'success' && '✅ Passed' || needs.security-scan.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |
             | 🏗️ Build Verification | ${{ needs.build-verification.result == 'success' && '✅ Passed' || '❌ Failed' }} |
+            | 🎭 E2E Tests | ${{ needs.e2e-tests.result == 'success' && '✅ Passed' || needs.e2e-tests.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |
             
             **Service:** \`${{ inputs.service_name }}\`
             
