@@ -276,7 +276,7 @@ jobs:
         run: |
           echo "Starting container..."
           docker run -d --name test-container \
-            -- network host \
+            --network host \
             -e DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
             -e REDIS_HOST="localhost" \
             -e REDIS_PORT="6379" \
