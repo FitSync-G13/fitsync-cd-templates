@@ -1,0 +1,322 @@
+name: K3s OpenSearch Cluster Install
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'OpenSearch K3s cluster name'
+        required: true
+        type: string
+      k3s_version:
+        description: 'K3s version to install'
+        required: false
+        type: string
+        default: 'latest'
+      master_instances:
+        description: 'Comma-separated list of OpenSearch master instance IDs'
+        required: true
+        type: string
+      worker_instances:
+        description: 'Comma-separated list of OpenSearch worker instance IDs'
+        required: true
+        type: string
+      k3s_api_dns:
+        description: 'OpenSearch K3s API server DNS name'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+      install_masters:
+        description: 'Install K3s on masters'
+        required: false
+        type: boolean
+        default: false
+      install_workers:
+        description: 'Install K3s on workers'
+        required: false
+        type: boolean
+        default: false
+      verify_cluster:
+        description: 'Verify cluster status'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  install-k3s-masters:
+    if: ${{ inputs.install_masters }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      k3s_token: ${{ steps.get-token.outputs.token }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-OpenSearch-K3s-Masters
+
+    - name: Install K3s on first master (default CNI)
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Installing K3s on first OpenSearch master: $FIRST_MASTER"
+        
+        # Install K3s with default Flannel CNI and Traefik
+        K3S_VERSION="${{ inputs.k3s_version }}"
+        INSTALL_CMD="curl -sfL https://get.k3s.io | "
+        if [ -n "$K3S_VERSION" ]; then
+          INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_VERSION=$K3S_VERSION "
+        fi
+        INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_EXEC='--tls-san=${{ inputs.k3s_api_dns }}' sh -"
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters "commands=[
+            \"$INSTALL_CMD\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Waiting for K3s installation to complete..."
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        # Check installation result
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
+
+    - name: Get K3s token from first master
+      id: get-token
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Getting K3s token from first master..."
+        TOKEN=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=["sudo cat /var/lib/rancher/k3s/server/node-token"]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$TOKEN" \
+          --instance-id "$FIRST_MASTER"
+        
+        K3S_TOKEN=$(aws ssm get-command-invocation \
+          --command-id "$TOKEN" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text | tr -d '\n')
+        
+        echo "token=$K3S_TOKEN" >> $GITHUB_OUTPUT
+
+    - name: Install K3s on additional masters
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        K3S_TOKEN="${{ steps.get-token.outputs.token }}"
+        
+        # Get additional masters (skip first one)
+        ADDITIONAL_MASTERS=$(echo $MASTER_INSTANCES | cut -d',' -f2-)
+        K3S_VERSION="${{ inputs.k3s_version }}"
+        
+        if [ "$ADDITIONAL_MASTERS" != "$FIRST_MASTER" ] && [ -n "$ADDITIONAL_MASTERS" ]; then
+          echo "Installing K3s on additional masters: $ADDITIONAL_MASTERS"
+          
+          INSTALL_CMD="curl -sfL https://get.k3s.io | "
+          if [ -n "$K3S_VERSION" ]; then
+            INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_VERSION=$K3S_VERSION "
+          fi
+          
+          IFS=',' read -ra MASTERS <<< "$ADDITIONAL_MASTERS"
+          for master in "${MASTERS[@]}"; do
+            if [ "$master" != "$FIRST_MASTER" ]; then
+              echo "Installing K3s on master: $master"
+              
+              MASTER_INSTALL_CMD="${INSTALL_CMD}sh -s - server --server https://$FIRST_MASTER:6443 --token $K3S_TOKEN --tls-san=${{ inputs.k3s_api_dns }}"
+              
+              COMMAND_ID=$(aws ssm send-command \
+                --instance-ids "$master" \
+                --document-name "AWS-RunShellScript" \
+                --parameters "commands=[
+                  \"$MASTER_INSTALL_CMD\",
+                  \"sudo systemctl enable k3s\",
+                  \"sudo systemctl start k3s\"
+                ]" \
+                --query 'Command.CommandId' \
+                --output text)
+              
+              aws ssm wait command-executed \
+                --command-id "$COMMAND_ID" \
+                --instance-id "$master"
+            fi
+          done
+        else
+          echo "No additional masters to install"
+        fi
+
+  install-k3s-workers:
+    if: ${{ always() && inputs.install_workers }}
+    needs: install-k3s-masters
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-OpenSearch-K3s-Workers
+
+    - name: Get K3s token from existing cluster
+      id: get-token
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Getting K3s token from existing cluster..."
+        TOKEN_COMMAND=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=["sudo cat /var/lib/rancher/k3s/server/node-token"]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$TOKEN_COMMAND" \
+          --instance-id "$FIRST_MASTER"
+        
+        K3S_TOKEN=$(aws ssm get-command-invocation \
+          --command-id "$TOKEN_COMMAND" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text | tr -d '\n')
+        
+        echo "token=$K3S_TOKEN" >> $GITHUB_OUTPUT
+
+    - name: Install K3s on workers
+      run: |
+        WORKER_INSTANCES="${{ inputs.worker_instances }}"
+        K3S_TOKEN="${{ steps.get-token.outputs.token }}"
+        K3S_VERSION="${{ inputs.k3s_version }}"
+        
+        INSTALL_CMD="curl -sfL https://get.k3s.io | "
+        if [ -n "$K3S_VERSION" ]; then
+          INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_VERSION=$K3S_VERSION "
+        fi
+        INSTALL_CMD="${INSTALL_CMD}K3S_URL=https://${{ inputs.k3s_api_dns }}:6443 K3S_TOKEN=$K3S_TOKEN sh -"
+        
+        if [ -n "$WORKER_INSTANCES" ] && [ "$WORKER_INSTANCES" != "" ]; then
+          echo "Installing K3s on workers: $WORKER_INSTANCES"
+          
+          IFS=',' read -ra WORKERS <<< "$WORKER_INSTANCES"
+          for worker in "${WORKERS[@]}"; do
+            echo "Installing K3s on worker: $worker"
+            
+            COMMAND_ID=$(aws ssm send-command \
+              --instance-ids "$worker" \
+              --document-name "AWS-RunShellScript" \
+              --timeout-seconds 900 \
+              --parameters "commands=[
+                \"echo 'Starting K3s agent installation...'\",
+                \"$INSTALL_CMD\",
+                \"echo 'K3s agent installed, enabling service...'\",
+                \"sudo systemctl enable k3s-agent\",
+                \"echo 'K3s agent installation completed'\"
+              ]" \
+              --query 'Command.CommandId' \
+              --output text)
+            
+            echo "Command ID: $COMMAND_ID"
+            echo "Waiting for command to complete (timeout: 15 minutes)..."
+            
+            if aws ssm wait command-executed \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$worker" \
+              --cli-read-timeout 900 \
+              --cli-connect-timeout 60; then
+              
+              echo "✅ K3s worker installation completed successfully on $worker"
+              
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "$worker" \
+                --query 'StandardOutputContent' \
+                --output text
+            else
+              echo "⚠️ Command timed out or failed on $worker. Getting partial output..."
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "$worker" \
+                --query '[StandardOutputContent, StandardErrorContent]' \
+                --output text || echo "Could not retrieve command output"
+              
+              echo "Continuing with remaining workers..."
+            fi
+          done
+        else
+          echo "No workers to install"
+        fi
+
+  verify-cluster:
+    if: ${{ always() && inputs.verify_cluster }}
+    needs: [install-k3s-masters, install-k3s-workers]
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-OpenSearch-K3s-Verify
+
+    - name: Verify cluster status
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying OpenSearch K3s cluster status..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "sudo k3s kubectl get nodes -o wide",
+            "sudo k3s kubectl get pods -A",
+            "sudo k3s kubectl cluster-info"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text

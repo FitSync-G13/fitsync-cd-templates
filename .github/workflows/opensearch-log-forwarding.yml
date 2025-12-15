@@ -1,0 +1,200 @@
+name: OpenSearch Log Forwarding Setup
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'Main K3s cluster name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of main cluster master instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+      fluent_bit_version:
+        description: 'Fluent Bit version'
+        required: false
+        type: string
+        default: '2.2.0'
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  install-fluent-bit:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-FluentBit-Install
+
+    - name: Install Fluent Bit for log forwarding
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Installing Fluent Bit for OpenSearch log forwarding..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 600 \
+          --parameters "commands=[
+            \"echo 'Adding Fluent Bit Helm repository...'\",
+            \"sudo k3s kubectl create namespace fluent-bit --dry-run=client -o yaml | sudo k3s kubectl apply -f -\",
+            \"curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash\",
+            \"helm repo add fluent https://fluent.github.io/helm-charts\",
+            \"helm repo update\",
+            \"echo 'Creating Fluent Bit configuration...'\",
+            \"cat <<EOF | sudo k3s kubectl apply -f -\",
+            \"apiVersion: v1\",
+            \"kind: ConfigMap\",
+            \"metadata:\",
+            \"  name: fluent-bit-config\",
+            \"  namespace: fluent-bit\",
+            \"data:\",
+            \"  fluent-bit.conf: |\",
+            \"    [SERVICE]\",
+            \"        Flush         1\",
+            \"        Log_Level     info\",
+            \"        Daemon        off\",
+            \"        Parsers_File  parsers.conf\",
+            \"        HTTP_Server   On\",
+            \"        HTTP_Listen   0.0.0.0\",
+            \"        HTTP_Port     2020\",
+            \"    [INPUT]\",
+            \"        Name              tail\",
+            \"        Path              /var/log/containers/*.log\",
+            \"        Parser            cri\",
+            \"        Tag               kube.*\",
+            \"        Refresh_Interval  5\",
+            \"        Mem_Buf_Limit     50MB\",
+            \"        Skip_Long_Lines   On\",
+            \"    [INPUT]\",
+            \"        Name systemd\",
+            \"        Tag  host.*\",
+            \"        Systemd_Filter _SYSTEMD_UNIT=k3s.service\",
+            \"        Systemd_Filter _SYSTEMD_UNIT=k3s-agent.service\",
+            \"    [FILTER]\",
+            \"        Name                kubernetes\",
+            \"        Match               kube.*\",
+            \"        Kube_URL            https://kubernetes.default.svc:443\",
+            \"        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\",
+            \"        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token\",
+            \"        Kube_Tag_Prefix     kube.var.log.containers.\",
+            \"        Merge_Log           On\",
+            \"        Keep_Log            Off\",
+            \"        K8S-Logging.Parser  On\",
+            \"        K8S-Logging.Exclude Off\",
+            \"    [OUTPUT]\",
+            \"        Name            opensearch\",
+            \"        Match           *\",
+            \"        Host            ${{ vars.OPENSEARCH_SUBDOMAIN }}\",
+            \"        Port            443\",
+            \"        Index           fitsync-logs\",
+            \"        Type            _doc\",
+            \"        HTTP_User       admin\",
+            \"        HTTP_Passwd     admin\",
+            \"        tls             On\",
+            \"        tls.verify      Off\",
+            \"        Suppress_Type_Name On\",
+            \"  parsers.conf: |\",
+            \"    [PARSER]\",
+            \"        Name        cri\",
+            \"        Format      regex\",
+            \"        Regex       ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<message>.*)\",
+            \"        Time_Key    time\",
+            \"        Time_Format %Y-%m-%dT%H:%M:%S.%L%z\",
+            \"EOF\",
+            \"echo 'Installing Fluent Bit with Helm...'\",
+            \"helm upgrade --install fluent-bit fluent/fluent-bit \\\\\",
+            \"  --namespace fluent-bit \\\\\",
+            \"  --version ${{ inputs.fluent_bit_version }} \\\\\",
+            \"  --set config.configMap=fluent-bit-config \\\\\",
+            \"  --set serviceAccount.create=true \\\\\",
+            \"  --set rbac.create=true \\\\\",
+            \"  --set podSecurityPolicy.create=false \\\\\",
+            \"  --set resources.limits.cpu=200m \\\\\",
+            \"  --set resources.limits.memory=200Mi \\\\\",
+            \"  --set resources.requests.cpu=100m \\\\\",
+            \"  --set resources.requests.memory=128Mi\",
+            \"echo 'Waiting for Fluent Bit to be ready...'\",
+            \"sudo k3s kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=fluent-bit -n fluent-bit --timeout=300s\",
+            \"echo 'Fluent Bit installed successfully'\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
+
+  verify-log-forwarding:
+    needs: install-fluent-bit
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-FluentBit-Verify
+
+    - name: Verify log forwarding setup
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying Fluent Bit log forwarding setup..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
+          --parameters 'commands=[
+            "echo \"Fluent Bit Status:\"",
+            "sudo k3s kubectl get pods -n fluent-bit -o wide",
+            "echo \"Fluent Bit Logs (last 20 lines):\"",
+            "sudo k3s kubectl logs -n fluent-bit -l app.kubernetes.io/name=fluent-bit --tail=20",
+            "echo \"Fluent Bit ConfigMap:\"",
+            "sudo k3s kubectl get configmap fluent-bit-config -n fluent-bit -o yaml",
+            "echo \"Testing log generation...\"",
+            "sudo k3s kubectl run test-logger --image=busybox --restart=Never -- sh -c \"echo Test log message from main cluster; sleep 30\"",
+            "sleep 10",
+            "sudo k3s kubectl logs test-logger",
+            "sudo k3s kubectl delete pod test-logger --ignore-not-found=true"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
