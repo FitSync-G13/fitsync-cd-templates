@@ -221,6 +221,8 @@ jobs:
         K3S_TOKEN="${{ steps.get-token.outputs.token }}"
         K3S_VERSION="${{ inputs.k3s_version }}"
         
+        echo "Using K3s API server: ${{ inputs.k3s_api_dns }}"
+        
         INSTALL_CMD="curl -sfL https://get.k3s.io | "
         if [ -n "$K3S_VERSION" ]; then
           INSTALL_CMD="${INSTALL_CMD}INSTALL_K3S_VERSION=$K3S_VERSION "
@@ -237,24 +239,26 @@ jobs:
             COMMAND_ID=$(aws ssm send-command \
               --instance-ids "$worker" \
               --document-name "AWS-RunShellScript" \
-              --timeout-seconds 900 \
+              --timeout-seconds 1200 \
               --parameters "commands=[
                 \"echo 'Starting K3s agent installation...'\",
+                \"echo 'Connecting to K3s API at: ${{ inputs.k3s_api_dns }}:6443'\",
                 \"$INSTALL_CMD\",
                 \"echo 'K3s agent installed, enabling service...'\",
                 \"sudo systemctl enable k3s-agent\",
+                \"sudo systemctl status k3s-agent\",
                 \"echo 'K3s agent installation completed'\"
               ]" \
               --query 'Command.CommandId' \
               --output text)
             
             echo "Command ID: $COMMAND_ID"
-            echo "Waiting for command to complete (timeout: 15 minutes)..."
+            echo "Waiting for command to complete (timeout: 20 minutes)..."
             
             if aws ssm wait command-executed \
               --command-id "$COMMAND_ID" \
               --instance-id "$worker" \
-              --cli-read-timeout 900 \
+              --cli-read-timeout 1200 \
               --cli-connect-timeout 60; then
               
               echo "✅ K3s worker installation completed successfully on $worker"
