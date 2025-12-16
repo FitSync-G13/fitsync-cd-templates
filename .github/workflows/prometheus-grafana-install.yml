@@ -52,133 +52,101 @@ jobs:
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
         
-        echo "Installing Prometheus and Grafana for Cilium monitoring"
-        
-        COMMAND_ID=$(aws ssm send-command \
+        aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
-          --timeout-seconds 600 \
           --parameters 'commands=[
-            "echo Installing Prometheus and Grafana...",
             "sudo k3s kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/1.18.4/examples/kubernetes/addons/prometheus/monitoring-example.yaml",
-            "sleep 30",
-            "sudo k3s kubectl wait --for=condition=ready pod -l app=prometheus -n cilium-monitoring --timeout=300s",
-            "sudo k3s kubectl wait --for=condition=ready pod -l app=grafana -n cilium-monitoring --timeout=300s",
-            "echo Installation completed"
-          ]' \
-          --query 'Command.CommandId' \
-          --output text)
+            "sleep 60",
+            "sudo k3s kubectl get pods -n cilium-monitoring"
+          ]'
         
-        echo "Waiting for installation..."
-        sleep 60
-        
-        STATUS=$(aws ssm get-command-invocation \
-          --command-id "$COMMAND_ID" \
-          --instance-id "$FIRST_MASTER" \
-          --query 'Status' \
-          --output text)
-        
-        echo "Installation status: $STATUS"
+        sleep 90
+        echo "Prometheus and Grafana installed"
 
-    - name: Create VirtualServices
+    - name: Create Grafana VirtualService
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
         GATEWAY_NAME="${{ inputs.environment }}-gateway"
         
-        echo "Creating VirtualServices"
-        
-        VS_COMMAND=$(aws ssm send-command \
+        aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
-          --timeout-seconds 300 \
-          --parameters "commands=[
-            \"echo Creating Grafana VirtualService\",
-            \"sudo k3s kubectl apply -f - <<EOF
-apiVersion: networking.istio.io/v1beta1
-kind: VirtualService
-metadata:
-  name: grafana-monitoring
-  namespace: cilium-monitoring
-spec:
-  hosts:
-  - '*'
-  gateways:
-  - istio-system/$GATEWAY_NAME
-  http:
-  - match:
-    - uri:
-        prefix: /grafana
-    rewrite:
-      uri: /
-    route:
-    - destination:
-        host: grafana.cilium-monitoring.svc.cluster.local
-        port:
-          number: 3000
-EOF\",
-            \"echo Creating Prometheus VirtualService\",
-            \"sudo k3s kubectl apply -f - <<EOF
-apiVersion: networking.istio.io/v1beta1
-kind: VirtualService
-metadata:
-  name: prometheus-monitoring
-  namespace: cilium-monitoring
-spec:
-  hosts:
-  - '*'
-  gateways:
-  - istio-system/$GATEWAY_NAME
-  http:
-  - match:
-    - uri:
-        prefix: /prometheus
-    rewrite:
-      uri: /
-    route:
-    - destination:
-        host: prometheus.cilium-monitoring.svc.cluster.local
-        port:
-          number: 9090
-EOF\",
-            \"echo VirtualServices created\"
-          ]" \
-          --query 'Command.CommandId' \
-          --output text)
+          --parameters 'commands=[
+            "echo \"apiVersion: networking.istio.io/v1beta1\" > /tmp/grafana-vs.yaml",
+            "echo \"kind: VirtualService\" >> /tmp/grafana-vs.yaml",
+            "echo \"metadata:\" >> /tmp/grafana-vs.yaml",
+            "echo \"  name: grafana-monitoring\" >> /tmp/grafana-vs.yaml",
+            "echo \"  namespace: cilium-monitoring\" >> /tmp/grafana-vs.yaml",
+            "echo \"spec:\" >> /tmp/grafana-vs.yaml",
+            "echo \"  hosts:\" >> /tmp/grafana-vs.yaml",
+            "echo \"  - \\\"*\\\"\" >> /tmp/grafana-vs.yaml",
+            "echo \"  gateways:\" >> /tmp/grafana-vs.yaml",
+            "echo \"  - istio-system/'${GATEWAY_NAME}'\" >> /tmp/grafana-vs.yaml",
+            "echo \"  http:\" >> /tmp/grafana-vs.yaml",
+            "echo \"  - match:\" >> /tmp/grafana-vs.yaml",
+            "echo \"    - uri:\" >> /tmp/grafana-vs.yaml",
+            "echo \"        prefix: /grafana\" >> /tmp/grafana-vs.yaml",
+            "echo \"    rewrite:\" >> /tmp/grafana-vs.yaml",
+            "echo \"      uri: /\" >> /tmp/grafana-vs.yaml",
+            "echo \"    route:\" >> /tmp/grafana-vs.yaml",
+            "echo \"    - destination:\" >> /tmp/grafana-vs.yaml",
+            "echo \"        host: grafana.cilium-monitoring.svc.cluster.local\" >> /tmp/grafana-vs.yaml",
+            "echo \"        port:\" >> /tmp/grafana-vs.yaml",
+            "echo \"          number: 3000\" >> /tmp/grafana-vs.yaml",
+            "sudo k3s kubectl apply -f /tmp/grafana-vs.yaml",
+            "rm /tmp/grafana-vs.yaml"
+          ]'
+
+    - name: Create Prometheus VirtualService
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        GATEWAY_NAME="${{ inputs.environment }}-gateway"
         
-        echo "Waiting for VirtualServices..."
-        sleep 30
-        
-        VS_STATUS=$(aws ssm get-command-invocation \
-          --command-id "$VS_COMMAND" \
-          --instance-id "$FIRST_MASTER" \
-          --query 'Status' \
-          --output text)
-        
-        echo "VirtualService status: $VS_STATUS"
+        aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "echo \"apiVersion: networking.istio.io/v1beta1\" > /tmp/prometheus-vs.yaml",
+            "echo \"kind: VirtualService\" >> /tmp/prometheus-vs.yaml",
+            "echo \"metadata:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"  name: prometheus-monitoring\" >> /tmp/prometheus-vs.yaml",
+            "echo \"  namespace: cilium-monitoring\" >> /tmp/prometheus-vs.yaml",
+            "echo \"spec:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"  hosts:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"  - \\\"*\\\"\" >> /tmp/prometheus-vs.yaml",
+            "echo \"  gateways:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"  - istio-system/'${GATEWAY_NAME}'\" >> /tmp/prometheus-vs.yaml",
+            "echo \"  http:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"  - match:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"    - uri:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"        prefix: /prometheus\" >> /tmp/prometheus-vs.yaml",
+            "echo \"    rewrite:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"      uri: /\" >> /tmp/prometheus-vs.yaml",
+            "echo \"    route:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"    - destination:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"        host: prometheus.cilium-monitoring.svc.cluster.local\" >> /tmp/prometheus-vs.yaml",
+            "echo \"        port:\" >> /tmp/prometheus-vs.yaml",
+            "echo \"          number: 9090\" >> /tmp/prometheus-vs.yaml",
+            "sudo k3s kubectl apply -f /tmp/prometheus-vs.yaml",
+            "rm /tmp/prometheus-vs.yaml"
+          ]'
 
     - name: Verify Installation
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
         
-        echo "Verifying installation"
+        sleep 30
         
-        VERIFY_CMD=$(aws ssm send-command \
+        aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "sudo k3s kubectl get pods -n cilium-monitoring",
-            "sudo k3s kubectl get svc -n cilium-monitoring",
             "sudo k3s kubectl get virtualservice -n cilium-monitoring"
-          ]' \
-          --query 'Command.CommandId' \
-          --output text)
+          ]'
         
-        sleep 20
-        
-        aws ssm get-command-invocation \
-          --command-id "$VERIFY_CMD" \
-          --instance-id "$FIRST_MASTER" \
-          --query 'StandardOutputContent' \
-          --output text || echo "Verification completed"
+        echo "Installation completed. Access via /grafana and /prometheus"
