@@ -371,16 +371,7 @@ jobs:
         # Create connection string secret
         CONNECTION_SECRET_NAME="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/opensearch-connection"
         
-        CONNECTION_JSON=$(cat <<EOF
-{
-  "endpoint": "$OPENSEARCH_ENDPOINT",
-  "dashboards_endpoint": "$DASHBOARDS_ENDPOINT",
-  "username": "admin",
-  "namespace": "opensearch",
-  "cluster_name": "opensearch-cluster"
-}
-EOF
-)
+        CONNECTION_JSON="{\\\"endpoint\\\": \\\"$OPENSEARCH_ENDPOINT\\\", \\\"dashboards_endpoint\\\": \\\"$DASHBOARDS_ENDPOINT\\\", \\\"username\\\": \\\"admin\\\", \\\"namespace\\\": \\\"opensearch\\\", \\\"cluster_name\\\": \\\"opensearch-cluster\\\"}"
         
         if aws secretsmanager describe-secret --secret-id "$CONNECTION_SECRET_NAME" >/dev/null 2>&1; then
           echo "Updating existing connection secret..."
