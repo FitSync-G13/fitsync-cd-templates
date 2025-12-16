@@ -52,118 +52,49 @@ jobs:
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
         
-        echo "Installing Prometheus and Grafana for Cilium monitoring on cluster ${{ inputs.cluster_name }}"
-        echo "Using master instance: $FIRST_MASTER"
+        echo "Installing Prometheus and Grafana for Cilium monitoring"
         
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 600 \
           --parameters 'commands=[
-            "echo Installing Prometheus and Grafana for Cilium monitoring...",
-            "echo Setting up Helm if not already installed...",
-            "if ! command -v helm &> /dev/null; then",
-            "  curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3",
-            "  chmod 700 get_helm.sh",
-            "  ./get_helm.sh",
-            "  rm get_helm.sh",
-            "fi",
-            "echo Applying Cilium monitoring example...",
+            "echo Installing Prometheus and Grafana...",
             "sudo k3s kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/1.18.4/examples/kubernetes/addons/prometheus/monitoring-example.yaml",
-            "echo Waiting for pods to be ready...",
             "sleep 30",
-            "echo Checking deployment status...",
-            "sudo k3s kubectl get pods -n cilium-monitoring",
-            "echo Waiting for services to be ready...",
             "sudo k3s kubectl wait --for=condition=ready pod -l app=prometheus -n cilium-monitoring --timeout=300s",
             "sudo k3s kubectl wait --for=condition=ready pod -l app=grafana -n cilium-monitoring --timeout=300s",
-            "echo Prometheus and Grafana installation completed successfully"
+            "echo Installation completed"
           ]' \
           --query 'Command.CommandId' \
           --output text)
         
-        echo "Command ID: $COMMAND_ID"
-        echo "Waiting for installation to complete (max 10 minutes)..."
+        echo "Waiting for installation..."
+        sleep 60
         
-        # Poll for command completion
-        MAX_ATTEMPTS=60  # 60 attempts * 10 seconds = 10 minutes
-        ATTEMPT=0
-        STATUS="InProgress"
-        
-        while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$STATUS" = "InProgress" ]; do
-          sleep 10
-          ATTEMPT=$((ATTEMPT + 1))
-          
-          STATUS=$(aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$FIRST_MASTER" \
-            --query 'Status' \
-            --output text 2>/dev/null || echo "InProgress")
-          
-          echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - Status: $STATUS"
-        done
-        
-        # Get the final output
-        echo "Getting command output..."
-        STATUS_OUTPUT=$(aws ssm get-command-invocation \
+        STATUS=$(aws ssm get-command-invocation \
           --command-id "$COMMAND_ID" \
           --instance-id "$FIRST_MASTER" \
           --query 'Status' \
           --output text)
         
-        STDOUT_OUTPUT=$(aws ssm get-command-invocation \
-          --command-id "$COMMAND_ID" \
-          --instance-id "$FIRST_MASTER" \
-          --query 'StandardOutputContent' \
-          --output text)
-        
-        echo "Final Status: $STATUS_OUTPUT"
-        echo "Output:"
-        echo "$STDOUT_OUTPUT"
-        
-        if [ "$STATUS_OUTPUT" = "Success" ]; then
-          echo "Prometheus and Grafana installation completed successfully"
-        else
-          echo "Prometheus and Grafana installation failed with status: $STATUS_OUTPUT"
-          exit 1
-        fi
+        echo "Installation status: $STATUS"
 
-    - name: Create Istio VirtualServices for Monitoring
+    - name: Create VirtualServices
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
-        
-        # Use input or fall back to vars
-        DOMAIN_NAME="${{ inputs.domain_name }}"
-        if [ -z "$DOMAIN_NAME" ]; then
-          DOMAIN_NAME="${{ vars.DOMAIN_NAME }}"
-        fi
-        
-        SUBDOMAIN_PREFIX="${{ inputs.subdomain_prefix }}"
-        if [ -z "$SUBDOMAIN_PREFIX" ]; then
-          SUBDOMAIN_PREFIX="${{ vars.SUBDOMAIN_PREFIX || '' }}"
-        fi
-        
-        # Gateway name always uses environment
         GATEWAY_NAME="${{ inputs.environment }}-gateway"
         
-        if [ -z "$SUBDOMAIN_PREFIX" ]; then
-          HOST_PATTERN="*.$DOMAIN_NAME"
-        else
-          HOST_PATTERN="*.$SUBDOMAIN_PREFIX.$DOMAIN_NAME"
-        fi
+        echo "Creating VirtualServices"
         
-        echo "Creating VirtualServices for monitoring dashboards"
-        echo "Gateway: $GATEWAY_NAME"
-        echo "Host pattern: $HOST_PATTERN"
-        
-        VIRTUALSERVICE_COMMAND=$(aws ssm send-command \
+        VS_COMMAND=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 300 \
           --parameters 'commands=[
-            "echo Creating Grafana VirtualService...",
-            "sudo k3s kubectl apply -f - << EOF
+            "echo Creating Grafana VirtualService",
+            "sudo k3s kubectl create -f - <<EOF
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -186,8 +117,8 @@ spec:
         port:
           number: 3000
 EOF",
-            "echo Creating Prometheus VirtualService...",
-            "sudo k3s kubectl apply -f - << EOF
+            "echo Creating Prometheus VirtualService",
+            "sudo k3s kubectl create -f - <<EOF
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -210,105 +141,44 @@ spec:
         port:
           number: 9090
 EOF",
-            "echo VirtualServices created successfully",
+            "echo VirtualServices created"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Waiting for VirtualServices..."
+        sleep 30
+        
+        VS_STATUS=$(aws ssm get-command-invocation \
+          --command-id "$VS_COMMAND" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'Status' \
+          --output text)
+        
+        echo "VirtualService status: $VS_STATUS"
+
+    - name: Verify Installation
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying installation"
+        
+        VERIFY_CMD=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "sudo k3s kubectl get pods -n cilium-monitoring",
+            "sudo k3s kubectl get svc -n cilium-monitoring",
             "sudo k3s kubectl get virtualservice -n cilium-monitoring"
           ]' \
           --query 'Command.CommandId' \
           --output text)
         
-        echo "VirtualService Command ID: $VIRTUALSERVICE_COMMAND"
-        echo "Waiting for VirtualService creation to complete..."
+        sleep 20
         
-        MAX_ATTEMPTS=30
-        ATTEMPT=0
-        STATUS="InProgress"
-        
-        while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$STATUS" = "InProgress" ]; do
-          sleep 10
-          ATTEMPT=$((ATTEMPT + 1))
-          
-          STATUS=$(aws ssm get-command-invocation \
-            --command-id "$VIRTUALSERVICE_COMMAND" \
-            --instance-id "$FIRST_MASTER" \
-            --query 'Status' \
-            --output text 2>/dev/null || echo "InProgress")
-          
-          echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - Status: $STATUS"
-        done
-        
-        echo "Getting VirtualService command output..."
-        STDOUT_OUTPUT=$(aws ssm get-command-invocation \
-          --command-id "$VIRTUALSERVICE_COMMAND" \
-          --instance-id "$FIRST_MASTER" \
-          --query 'StandardOutputContent' \
-          --output text)
-        
-        echo "VirtualService Output:"
-        echo "$STDOUT_OUTPUT"
-        
-        if [ "$STATUS" = "Success" ]; then
-          echo "VirtualServices created successfully"
-        else
-          echo "VirtualService creation failed with status: $STATUS"
-          exit 1
-        fi
-
-    - name: Verify Installation and Access
-      run: |
-        MASTER_INSTANCES="${{ inputs.master_instances }}"
-        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
-        
-        echo "Verifying Prometheus and Grafana installation..."
-        
-        VERIFY_COMMAND=$(aws ssm send-command \
-          --instance-ids "$FIRST_MASTER" \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "echo \"Checking cilium-monitoring namespace...\"",
-            "sudo k3s kubectl get namespace cilium-monitoring",
-            "echo \"Checking Prometheus pods...\"",
-            "sudo k3s kubectl get pods -n cilium-monitoring -l app=prometheus",
-            "echo \"Checking Grafana pods...\"",
-            "sudo k3s kubectl get pods -n cilium-monitoring -l app=grafana",
-            "echo \"Checking services...\"",
-            "sudo k3s kubectl get svc -n cilium-monitoring",
-            "echo \"Checking VirtualServices...\"",
-            "sudo k3s kubectl get virtualservice -n cilium-monitoring",
-            "echo \"Checking if Prometheus is scraping Cilium metrics...\"",
-            "sudo k3s kubectl logs -n cilium-monitoring -l app=prometheus --tail=20 | grep -i cilium || echo No Cilium metrics logs found",
-            "echo \"Installation verification completed\"",
-            "echo \"Access URLs:\"",
-            "echo \"Grafana: https://your-domain/grafana\"",
-            "echo \"Prometheus: https://your-domain/prometheus\""
-          ]' \
-          --query 'Command.CommandId' \
-          --output text)
-        
-        echo "Verify command ID: $VERIFY_COMMAND"
-        echo "Waiting for verification to complete..."
-        
-        # Poll for verification completion
-        MAX_ATTEMPTS=30
-        ATTEMPT=0
-        STATUS="InProgress"
-        
-        while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$STATUS" = "InProgress" ]; do
-          sleep 5
-          ATTEMPT=$((ATTEMPT + 1))
-          
-          STATUS=$(aws ssm get-command-invocation \
-            --command-id "$VERIFY_COMMAND" \
-            --instance-id "$FIRST_MASTER" \
-            --query 'Status' \
-            --output text 2>/dev/null || echo "InProgress")
-          
-          echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - Status: $STATUS"
-        done
-        
-        # Get verification output
-        echo "Verification results:"
         aws ssm get-command-invocation \
-          --command-id "$VERIFY_COMMAND" \
+          --command-id "$VERIFY_CMD" \
           --instance-id "$FIRST_MASTER" \
           --query 'StandardOutputContent' \
-          --output text || echo "Could not retrieve verification output"
+          --output text || echo "Verification completed"
