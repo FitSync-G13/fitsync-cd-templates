@@ -61,6 +61,13 @@ jobs:
           --timeout-seconds 600 \
           --parameters 'commands=[
             "echo Installing Prometheus and Grafana for Cilium monitoring...",
+            "echo Setting up Helm if not already installed...",
+            "if ! command -v helm &> /dev/null; then",
+            "  curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3",
+            "  chmod 700 get_helm.sh",
+            "  ./get_helm.sh",
+            "  rm get_helm.sh",
+            "fi",
             "echo Applying Cilium monitoring example...",
             "sudo k3s kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/1.18.4/examples/kubernetes/addons/prometheus/monitoring-example.yaml",
             "echo Waiting for pods to be ready...",
