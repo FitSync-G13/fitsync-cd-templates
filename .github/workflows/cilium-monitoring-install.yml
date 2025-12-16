@@ -81,16 +81,7 @@ jobs:
             "echo Checking if Cilium is already installed...",
             "if sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium status >/dev/null 2>&1; then echo Cilium is already installed, upgrading with monitoring features...; else echo Installing Cilium with monitoring features...; fi",
             "echo Installing/Upgrading Cilium with monitoring features...",
-            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium install --version 1.18.4 \\",
-            "  --set ipam.operator.clusterPoolIPv4PodCIDRList=10.42.0.0/16 \\",
-            "  --set kubeProxyReplacement=false \\",
-            "  --set socketLB.hostNamespaceOnly=true \\",
-            "  --set cni.exclusive=false \\",
-            "  --set prometheus.enabled=true \\",
-            "  --set operator.prometheus.enabled=true \\",
-            "  --set hubble.enabled=true \\",
-            "  --set hubble.metrics.enableOpenMetrics=true \\",
-            "  --set hubble.metrics.enabled=\"{dns,drop,tcp,flow,port-distribution,icmp,httpV2:exemplars=true;labelsContext=source_ip\\,source_namespace\\,source_workload\\,destination_ip\\,destination_namespace\\,destination_workload\\,traffic_direction}\"",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium install --version 1.18.4 --set ipam.operator.clusterPoolIPv4PodCIDRList=10.42.0.0/16 --set kubeProxyReplacement=false --set socketLB.hostNamespaceOnly=true --set cni.exclusive=false --set prometheus.enabled=true --set operator.prometheus.enabled=true --set hubble.enabled=true --set hubble.metrics.enableOpenMetrics=true --set hubble.metrics.enabled=\"{dns,drop,tcp,flow,port-distribution,icmp,httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction}\"",
             "echo Cilium installation with monitoring completed successfully"
           ]' \
           --query 'Command.CommandId' \
