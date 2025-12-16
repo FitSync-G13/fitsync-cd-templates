@@ -47,45 +47,10 @@ jobs:
         aws-region: ${{ vars.AWS_REGION }}
         role-session-name: GitHubActions-OpenSearch-Helm
 
-    - name: Generate and store OpenSearch admin password
-      id: generate-password
-      run: |
-        echo "Generating secure admin password for OpenSearch..."
-        
-        # Generate a strong password (32 characters, alphanumeric + special chars)
-        ADMIN_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-32)
-        
-        # Secret name following the same pattern as database secrets
-        SECRET_NAME="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/opensearch-admin-password"
-        
-        echo "Creating/updating secret: $SECRET_NAME"
-        
-        # Try to create the secret, if it exists, update it
-        if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
-          echo "Secret exists, updating..."
-          aws secretsmanager update-secret \
-            --secret-id "$SECRET_NAME" \
-            --secret-string "$ADMIN_PASSWORD"
-          echo "✅ Updated existing OpenSearch admin password secret"
-        else
-          echo "Creating new secret..."
-          aws secretsmanager create-secret \
-            --name "$SECRET_NAME" \
-            --description "OpenSearch admin password for ${{ inputs.environment }}" \
-            --secret-string "$ADMIN_PASSWORD" \
-            --tags '[{"Key":"Project","Value":"${{ vars.PROJECT_NAME }}"},{"Key":"Environment","Value":"${{ inputs.environment }}"},{"Key":"Service","Value":"opensearch"}]'
-          echo "✅ Created new OpenSearch admin password secret"
-        fi
-        
-        # Store password for use in deployment (masked in logs)
-        echo "::add-mask::$ADMIN_PASSWORD"
-        echo "admin_password=$ADMIN_PASSWORD" >> $GITHUB_OUTPUT
-
     - name: Deploy OpenSearch using Helm
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
-        ADMIN_PASSWORD="${{ steps.generate-password.outputs.admin_password }}"
         
         echo "Deploying OpenSearch using official Helm chart..."
         
@@ -105,6 +70,8 @@ jobs:
             "if sudo /usr/local/bin/helm list -n opensearch --kubeconfig /etc/rancher/k3s/k3s.yaml | grep -q opensearch-cluster; then echo OpenSearch already deployed, upgrading...; HELM_ACTION=upgrade; else echo New OpenSearch deployment; HELM_ACTION=install; fi",
             "echo Creating OpenSearch values file...",
             "cat > /tmp/opensearch-values.yaml << \"EOFVALUES\"",
+            "image:",
+            "  tag: \"${{ inputs.opensearch_version || '2.11.1' }}\"",
             "clusterName: opensearch-cluster",
             "nodeGroup: master",
             "masterService: opensearch-cluster-master", 
@@ -134,8 +101,6 @@ jobs:
             "    network.host: 0.0.0.0",
             "    plugins.security.disabled: true",
             "extraEnvs:",
-            "  - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD",
-            "    value: \"'$ADMIN_PASSWORD'\"",
             "  - name: DISABLE_INSTALL_DEMO_CONFIG", 
             "    value: \"true\"",
             "service:",
@@ -202,6 +167,8 @@ jobs:
           --parameters 'commands=[
             "echo Creating OpenSearch Dashboards values file...",
             "cat > /tmp/dashboards-values.yaml << \"EOFDASH\"",
+            "image:",
+            "  tag: \"${{ inputs.opensearch_dashboards_version || '2.11.1' }}\"",
             "opensearchHosts: http://opensearch-cluster-master:9200",
             "replicaCount: 1",
             "resources:",
@@ -259,7 +226,7 @@ jobs:
         # Create connection string secret
         CONNECTION_SECRET_NAME="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/opensearch-connection"
         
-        CONNECTION_JSON="{\\\"endpoint\\\": \\\"$OPENSEARCH_ENDPOINT\\\", \\\"dashboards_endpoint\\\": \\\"$DASHBOARDS_ENDPOINT\\\", \\\"username\\\": \\\"admin\\\", \\\"namespace\\\": \\\"opensearch\\\", \\\"cluster_name\\\": \\\"opensearch-cluster\\\"}"
+        CONNECTION_JSON="{\\\"endpoint\\\": \\\"$OPENSEARCH_ENDPOINT\\\", \\\"dashboards_endpoint\\\": \\\"$DASHBOARDS_ENDPOINT\\\", \\\"security_disabled\\\": true, \\\"namespace\\\": \\\"opensearch\\\", \\\"cluster_name\\\": \\\"opensearch-cluster\\\"}"
         
         if aws secretsmanager describe-secret --secret-id "$CONNECTION_SECRET_NAME" >/dev/null 2>&1; then
           echo "Updating existing connection secret..."
@@ -279,7 +246,9 @@ jobs:
         echo ""
         echo "📋 Deployment Summary:"
         echo "  OpenSearch Cluster: opensearch-cluster (namespace: opensearch)"
-        echo "  Admin Password Secret: ${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/opensearch-admin-password"
+        echo "  OpenSearch Version: ${{ inputs.opensearch_version || '2.11.1' }}"
+        echo "  Dashboards Version: ${{ inputs.opensearch_dashboards_version || '2.11.1' }}"
+        echo "  Security Plugin: DISABLED (no authentication required)"
         echo "  Connection Details Secret: $CONNECTION_SECRET_NAME"
         echo "  Internal Endpoint: $OPENSEARCH_ENDPOINT"
         if [ "${{ vars.OPENSEARCH_DASHBOARDS_ENABLED }}" != "false" ]; then
