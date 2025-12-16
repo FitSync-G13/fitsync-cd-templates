@@ -92,7 +92,7 @@ jobs:
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
-          --timeout-seconds 1200 \
+          --timeout-seconds 1800 \
           --parameters 'commands=[
             "echo Setting up Helm and OpenSearch repository...",
             "curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3",
@@ -151,9 +151,9 @@ jobs:
             "antiAffinity: soft",
             "EOFVALUES",
             "echo Deploying OpenSearch with Helm...",
-            "sudo /usr/local/bin/helm $HELM_ACTION opensearch-cluster opensearch/opensearch --namespace opensearch --values /tmp/opensearch-values.yaml --timeout 15m --kubeconfig /etc/rancher/k3s/k3s.yaml",
+            "sudo /usr/local/bin/helm $HELM_ACTION opensearch-cluster opensearch/opensearch --namespace opensearch --values /tmp/opensearch-values.yaml --timeout 20m --kubeconfig /etc/rancher/k3s/k3s.yaml",
             "echo Waiting for OpenSearch pods to be ready...",
-            "sudo k3s kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=opensearch-cluster-master -n opensearch --timeout=900s",
+            "sudo k3s kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=opensearch-cluster-master -n opensearch --timeout=1200s",
             "echo Verifying OpenSearch cluster health...",
             "sudo k3s kubectl exec -n opensearch opensearch-cluster-master-0 -- curl -XGET http://localhost:9200/_cluster/health",
             "echo OpenSearch cluster deployed successfully using Helm chart"
