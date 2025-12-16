@@ -1,0 +1,203 @@
+name: Cilium CNI with Monitoring Install
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'K3s cluster name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of master instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+      cilium_cli_version:
+        description: 'Cilium CLI version (leave empty for latest)'
+        required: false
+        type: string
+        default: ''
+      enable_hubble:
+        description: 'Enable Hubble observability'
+        required: false
+        type: boolean
+        default: true
+      enable_metrics:
+        description: 'Enable Prometheus metrics'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  install-cilium-monitoring:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-Cilium-Monitoring-Install
+
+    - name: Install Cilium CNI with Monitoring
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Installing Cilium CNI with monitoring on cluster ${{ inputs.cluster_name }}"
+        echo "Using master instance: $FIRST_MASTER"
+        echo "Enable Hubble: ${{ inputs.enable_hubble }}"
+        echo "Enable Metrics: ${{ inputs.enable_metrics }}"
+        
+        # Install Cilium with monitoring features
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 600 \
+          --parameters 'commands=[
+            "echo Installing Cilium CNI with monitoring...",
+            "CLI_ARCH=amd64",
+            "if [ $(uname -m) = aarch64 ]; then CLI_ARCH=arm64; fi",
+            "echo Detected architecture: $CLI_ARCH",
+            "CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)",
+            "echo Using Cilium CLI version: $CILIUM_CLI_VERSION",
+            "curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}",
+            "sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum",
+            "sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin",
+            "rm -f cilium-linux-${CLI_ARCH}.tar.gz cilium-linux-${CLI_ARCH}.tar.gz.sha256sum",
+            "echo Checking if Cilium is already installed...",
+            "if sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium status >/dev/null 2>&1; then echo Cilium is already installed, upgrading with monitoring features...; else echo Installing Cilium with monitoring features...; fi",
+            "echo Installing/Upgrading Cilium with monitoring features...",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium install --version 1.18.4 \\",
+            "  --set ipam.operator.clusterPoolIPv4PodCIDRList=10.42.0.0/16 \\",
+            "  --set kubeProxyReplacement=false \\",
+            "  --set socketLB.hostNamespaceOnly=true \\",
+            "  --set cni.exclusive=false \\",
+            "  --set prometheus.enabled=true \\",
+            "  --set operator.prometheus.enabled=true \\",
+            "  --set hubble.enabled=true \\",
+            "  --set hubble.metrics.enableOpenMetrics=true \\",
+            "  --set hubble.metrics.enabled=\"{dns,drop,tcp,flow,port-distribution,icmp,httpV2:exemplars=true;labelsContext=source_ip\\,source_namespace\\,source_workload\\,destination_ip\\,destination_namespace\\,destination_workload\\,traffic_direction}\"",
+            "echo Cilium installation with monitoring completed successfully"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Command ID: $COMMAND_ID"
+        echo "Waiting for Cilium installation to complete (max 10 minutes)..."
+        
+        # Poll for command completion with custom timeout
+        MAX_ATTEMPTS=60  # 60 attempts * 10 seconds = 10 minutes
+        ATTEMPT=0
+        STATUS="InProgress"
+        
+        while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$STATUS" = "InProgress" ]; do
+          sleep 10
+          ATTEMPT=$((ATTEMPT + 1))
+          
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$FIRST_MASTER" \
+            --query 'Status' \
+            --output text 2>/dev/null || echo "InProgress")
+          
+          echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - Status: $STATUS"
+        done
+        
+        # Get the final output
+        echo "Getting command output..."
+        STATUS_OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'Status' \
+          --output text)
+        
+        STDOUT_OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text)
+        
+        echo "Final Status: $STATUS_OUTPUT"
+        echo "Output:"
+        echo "$STDOUT_OUTPUT"
+        
+        if [ "$STATUS_OUTPUT" = "Success" ]; then
+          echo "Cilium installation with monitoring completed successfully"
+        else
+          echo "Cilium installation with monitoring failed with status: $STATUS_OUTPUT"
+          exit 1
+        fi
+
+    - name: Verify Cilium and Hubble installation
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying Cilium and Hubble installation..."
+        
+        VERIFY_COMMAND=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "echo \"Checking Cilium pods...\"",
+            "sudo k3s kubectl get pods -n kube-system -l k8s-app=cilium -o wide",
+            "echo \"Checking Hubble pods...\"",
+            "sudo k3s kubectl get pods -n kube-system -l k8s-app=hubble-relay -o wide",
+            "echo \"Checking Cilium status...\"",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium status",
+            "echo \"Checking Hubble status...\"",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium hubble port-forward&",
+            "sleep 5",
+            "sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium hubble status",
+            "pkill -f \"cilium hubble port-forward\" || true",
+            "echo \"Checking cluster connectivity...\"",
+            "sudo k3s kubectl get nodes -o wide",
+            "echo \"Checking Cilium metrics endpoints...\"",
+            "sudo k3s kubectl get svc -n kube-system -l k8s-app=cilium",
+            "echo \"Cilium and Hubble verification completed\""
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Verify command ID: $VERIFY_COMMAND"
+        echo "Waiting for verification to complete..."
+        
+        # Poll for verification completion
+        MAX_ATTEMPTS=30  # 30 attempts * 5 seconds = 2.5 minutes
+        ATTEMPT=0
+        STATUS="InProgress"
+        
+        while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$STATUS" = "InProgress" ]; do
+          sleep 5
+          ATTEMPT=$((ATTEMPT + 1))
+          
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$VERIFY_COMMAND" \
+            --instance-id "$FIRST_MASTER" \
+            --query 'Status' \
+            --output text 2>/dev/null || echo "InProgress")
+          
+          echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - Status: $STATUS"
+        done
+        
+        # Get verification output
+        echo "Cilium and Hubble verification results:"
+        aws ssm get-command-invocation \
+          --command-id "$VERIFY_COMMAND" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text || echo "Could not retrieve verification output"
