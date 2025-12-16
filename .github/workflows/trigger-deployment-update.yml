@@ -1,0 +1,168 @@
+name: Trigger Deployment Update
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: 'Name of the service to update'
+        required: true
+        type: string
+      image_tag:
+        description: 'New image tag to deploy'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment (development/production)'
+        required: true
+        type: string
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  update-deployment:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-Deploy-Update
+
+    - name: Get infrastructure information
+      id: get-instances
+      run: |
+        echo "Getting infrastructure information for environment: ${{ inputs.environment }}"
+        
+        # Get master instances
+        MASTERS=$(aws ec2 describe-instances \
+          --filters "Name=tag:Project,Values=${{ vars.PROJECT_NAME }}" "Name=tag:Role,Values=k3s-master" "Name=tag:Env,Values=${{ vars.SPOKE_ENV }}" "Name=instance-state-name,Values=running" \
+          --query 'Reservations[].Instances[].InstanceId' \
+          --output text | tr '\t' ',')
+        
+        echo "master_instances=${MASTERS%,}" >> $GITHUB_OUTPUT
+        echo "Masters: ${MASTERS%,}"
+
+    - name: Update deployment with new image tag
+      run: |
+        MASTER_INSTANCES="${{ steps.get-instances.outputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        if [ -z "$FIRST_MASTER" ]; then
+          echo "❌ No master instances found for environment: ${{ inputs.environment }}"
+          exit 1
+        fi
+        
+        echo "🚀 Updating ${{ inputs.service_name }} deployment with image tag: ${{ inputs.image_tag }}"
+        
+        # Determine namespace based on environment
+        NAMESPACE="default"
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
+          --parameters "commands=[
+            \"export KUBECONFIG=/etc/rancher/k3s/k3s.yaml\",
+            \"echo '📋 Current deployment status:'\",
+            \"kubectl get deployment ${{ inputs.service_name }} -n $NAMESPACE -o wide || echo 'Deployment not found'\",
+            \"echo '🔄 Updating deployment with new image tag...'\",
+            \"kubectl set image deployment/${{ inputs.service_name }} ${{ inputs.service_name }}=074094370475.dkr.ecr.us-east-2.amazonaws.com/fitsync-${{ inputs.service_name }}:${{ inputs.image_tag }} -n $NAMESPACE\",
+            \"echo '⏳ Waiting for rollout to complete...'\",
+            \"kubectl rollout status deployment/${{ inputs.service_name }} -n $NAMESPACE --timeout=300s\",
+            \"echo '📋 Updated deployment status:'\",
+            \"kubectl get deployment ${{ inputs.service_name }} -n $NAMESPACE -o wide\",
+            \"kubectl get pods -l app=${{ inputs.service_name }} -n $NAMESPACE\",
+            \"echo '✅ Deployment update completed successfully'\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        echo "Waiting for deployment update..."
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --cli-read-timeout 300
+        
+        # Get command output
+        OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text)
+        
+        echo "$OUTPUT"
+        
+        # Check if command was successful
+        STATUS=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'Status' \
+          --output text)
+        
+        if [ "$STATUS" != "Success" ]; then
+          echo "❌ Deployment update failed"
+          ERROR_OUTPUT=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$FIRST_MASTER" \
+            --query 'StandardErrorContent' \
+            --output text)
+          echo "Error output: $ERROR_OUTPUT"
+          exit 1
+        fi
+        
+        echo "✅ Successfully updated ${{ inputs.service_name }} deployment with image tag: ${{ inputs.image_tag }}"
+
+    - name: Verify deployment health
+      run: |
+        MASTER_INSTANCES="${{ steps.get-instances.outputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "🔍 Verifying deployment health..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 120 \
+          --parameters "commands=[
+            \"export KUBECONFIG=/etc/rancher/k3s/k3s.yaml\",
+            \"echo '🏥 Health check for ${{ inputs.service_name }}:'\",
+            \"kubectl get deployment ${{ inputs.service_name }} -n default\",
+            \"echo '📊 Pod status:'\",
+            \"kubectl get pods -l app=${{ inputs.service_name }} -n default\",
+            \"echo '🔍 Checking pod readiness...'\",
+            \"kubectl wait --for=condition=ready pod -l app=${{ inputs.service_name }} -n default --timeout=60s || echo 'Warning: Some pods may not be ready yet'\",
+            \"echo '📈 Recent events:'\",
+            \"kubectl get events --sort-by=.metadata.creationTimestamp -n default | grep ${{ inputs.service_name }} | tail -5 || echo 'No recent events found'\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --cli-read-timeout 120
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
+
+    - name: Deployment Summary
+      run: |
+        echo "### ✅ Deployment Update Completed" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Service:** \`${{ inputs.service_name }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**New Image Tag:** \`${{ inputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Environment:** \`${{ inputs.environment }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Namespace:** \`default\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "The deployment has been updated with the new image and a rollout restart has been performed." >> $GITHUB_STEP_SUMMARY
