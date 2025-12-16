@@ -64,6 +64,20 @@ jobs:
         sleep 90
         echo "Prometheus and Grafana installed"
 
+    - name: Configure Grafana for subpath
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "sudo k3s kubectl patch configmap grafana-config -n cilium-monitoring --patch=\"{\\\"data\\\":{\\\"grafana.ini\\\":\\\"[server]\\nroot_url = %(protocol)s://%(domain)s:%(http_port)s/grafana/\\nserve_from_sub_path = true\\n\\\"}}\"",
+            "sudo k3s kubectl rollout restart deployment/grafana -n cilium-monitoring",
+            "sleep 30"
+          ]'
+
     - name: Create Grafana VirtualService
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
@@ -88,8 +102,6 @@ jobs:
             "echo \"  - match:\" >> /tmp/grafana-vs.yaml",
             "echo \"    - uri:\" >> /tmp/grafana-vs.yaml",
             "echo \"        prefix: /grafana\" >> /tmp/grafana-vs.yaml",
-            "echo \"    rewrite:\" >> /tmp/grafana-vs.yaml",
-            "echo \"      uri: /\" >> /tmp/grafana-vs.yaml",
             "echo \"    route:\" >> /tmp/grafana-vs.yaml",
             "echo \"    - destination:\" >> /tmp/grafana-vs.yaml",
             "echo \"        host: grafana.cilium-monitoring.svc.cluster.local\" >> /tmp/grafana-vs.yaml",
@@ -123,8 +135,6 @@ jobs:
             "echo \"  - match:\" >> /tmp/prometheus-vs.yaml",
             "echo \"    - uri:\" >> /tmp/prometheus-vs.yaml",
             "echo \"        prefix: /prometheus\" >> /tmp/prometheus-vs.yaml",
-            "echo \"    rewrite:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"      uri: /\" >> /tmp/prometheus-vs.yaml",
             "echo \"    route:\" >> /tmp/prometheus-vs.yaml",
             "echo \"    - destination:\" >> /tmp/prometheus-vs.yaml",
             "echo \"        host: prometheus.cilium-monitoring.svc.cluster.local\" >> /tmp/prometheus-vs.yaml",
@@ -132,6 +142,22 @@ jobs:
             "echo \"          number: 9090\" >> /tmp/prometheus-vs.yaml",
             "sudo k3s kubectl apply -f /tmp/prometheus-vs.yaml",
             "rm /tmp/prometheus-vs.yaml"
+          ]'
+
+    - name: Configure Prometheus for subpath
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "sudo k3s kubectl patch configmap prometheus -n cilium-monitoring --patch=\"{\\\"data\\\":{\\\"prometheus.yml\\\":\\\"global:\\n  scrape_interval: 15s\\nrule_files:\\nscrape_configs:\\n- job_name: prometheus\\n  static_configs:\\n  - targets: [localhost:9090]\\n- job_name: cilium-agent\\n  kubernetes_sd_configs:\\n  - role: pod\\n  relabel_configs:\\n  - source_labels: [__meta_kubernetes_pod_label_k8s_app]\\n    action: keep\\n    regex: cilium\\n  - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]\\n    action: replace\\n    regex: ([^:]+)(?::\\\\d+)?;(\\\\d+)\\n    replacement: \\${1}:\\${2}\\n    target_label: __address__\\n- job_name: cilium-operator\\n  kubernetes_sd_configs:\\n  - role: pod\\n  relabel_configs:\\n  - source_labels: [__meta_kubernetes_pod_label_name]\\n    action: keep\\n    regex: cilium-operator\\n  - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]\\n    action: replace\\n    regex: ([^:]+)(?::\\\\d+)?;(\\\\d+)\\n    replacement: \\${1}:\\${2}\\n    target_label: __address__\\n- job_name: hubble\\n  kubernetes_sd_configs:\\n  - role: pod\\n  relabel_configs:\\n  - source_labels: [__meta_kubernetes_pod_label_k8s_app]\\n    action: keep\\n    regex: hubble\\n  - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]\\n    action: replace\\n    regex: ([^:]+)(?::\\\\d+)?;(\\\\d+)\\n    replacement: \\${1}:\\${2}\\n    target_label: __address__\\n\\\"}}\"",
+            "sudo k3s kubectl set env deployment/prometheus -n cilium-monitoring --list",
+            "sudo k3s kubectl set env deployment/prometheus -n cilium-monitoring PROMETHEUS_WEB_EXTERNAL_URL=/prometheus/",
+            "sudo k3s kubectl rollout restart deployment/prometheus -n cilium-monitoring",
+            "sleep 30"
           ]'
 
     - name: Verify Installation
