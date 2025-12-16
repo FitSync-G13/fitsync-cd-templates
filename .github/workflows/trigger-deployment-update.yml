@@ -39,16 +39,48 @@ jobs:
     - name: Get infrastructure information
       id: get-instances
       run: |
-        echo "Getting infrastructure information for environment: ${{ inputs.environment }}"
+        echo "Getting FitSync infrastructure information for environment: ${{ inputs.environment }}"
         
-        # Get master instances
+        # Map GitHub environment to infrastructure environment
+        if [ "${{ inputs.environment }}" = "development" ]; then
+          INFRA_ENV="dev"
+        elif [ "${{ inputs.environment }}" = "production" ]; then
+          INFRA_ENV="prod"
+        else
+          INFRA_ENV="${{ inputs.environment }}"
+        fi
+        
+        echo "Mapped environment: ${{ inputs.environment }} -> $INFRA_ENV"
+        
+        # Get master instances using the same logic as fitsync-cd
         MASTERS=$(aws ec2 describe-instances \
-          --filters "Name=tag:Project,Values=${{ vars.PROJECT_NAME }}" "Name=tag:Role,Values=k3s-master" "Name=tag:Env,Values=${{ vars.SPOKE_ENV }}" "Name=instance-state-name,Values=running" \
+          --filters "Name=tag:Project,Values=${{ vars.PROJECT_NAME || 'fitsync' }}" "Name=tag:Role,Values=k3s-master" "Name=tag:Env,Values=$INFRA_ENV" "Name=instance-state-name,Values=running" \
           --query 'Reservations[].Instances[].InstanceId' \
           --output text | tr '\t' ',')
         
         echo "master_instances=${MASTERS%,}" >> $GITHUB_OUTPUT
-        echo "Masters: ${MASTERS%,}"
+        echo "Found masters: ${MASTERS%,}"
+        
+        if [ -z "${MASTERS%,}" ]; then
+          echo "❌ No master instances found. Trying alternative tag combinations..."
+          
+          # Try with different project name variations
+          for PROJECT in "fitsync" "FitSync" "${{ vars.PROJECT_NAME }}"; do
+            for ENV in "$INFRA_ENV" "${{ inputs.environment }}" "development" "dev"; do
+              echo "Trying Project=$PROJECT, Env=$ENV"
+              MASTERS=$(aws ec2 describe-instances \
+                --filters "Name=tag:Project,Values=$PROJECT" "Name=tag:Role,Values=k3s-master" "Name=tag:Env,Values=$ENV" "Name=instance-state-name,Values=running" \
+                --query 'Reservations[].Instances[].InstanceId' \
+                --output text | tr '\t' ',')
+              
+              if [ -n "${MASTERS%,}" ]; then
+                echo "✅ Found masters with Project=$PROJECT, Env=$ENV: ${MASTERS%,}"
+                echo "master_instances=${MASTERS%,}" >> $GITHUB_OUTPUT
+                break 2
+              fi
+            done
+          done
+        fi
 
     - name: Update deployment with new image tag
       run: |
@@ -57,13 +89,12 @@ jobs:
         
         if [ -z "$FIRST_MASTER" ]; then
           echo "❌ No master instances found for environment: ${{ inputs.environment }}"
+          echo "Please check that the K3s cluster is running and properly tagged."
           exit 1
         fi
         
         echo "🚀 Updating ${{ inputs.service_name }} deployment with image tag: ${{ inputs.image_tag }}"
-        
-        # Determine namespace based on environment
-        NAMESPACE="default"
+        echo "Using master instance: $FIRST_MASTER"
         
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
@@ -72,14 +103,14 @@ jobs:
           --parameters "commands=[
             \"export KUBECONFIG=/etc/rancher/k3s/k3s.yaml\",
             \"echo '📋 Current deployment status:'\",
-            \"kubectl get deployment ${{ inputs.service_name }} -n $NAMESPACE -o wide || echo 'Deployment not found'\",
+            \"kubectl get deployment ${{ inputs.service_name }} -n default -o wide || echo 'Deployment not found'\",
             \"echo '🔄 Updating deployment with new image tag...'\",
-            \"kubectl set image deployment/${{ inputs.service_name }} ${{ inputs.service_name }}=074094370475.dkr.ecr.us-east-2.amazonaws.com/fitsync-${{ inputs.service_name }}:${{ inputs.image_tag }} -n $NAMESPACE\",
+            \"kubectl set image deployment/${{ inputs.service_name }} ${{ inputs.service_name }}=074094370475.dkr.ecr.us-east-2.amazonaws.com/fitsync-${{ inputs.service_name }}:${{ inputs.image_tag }} -n default\",
             \"echo '⏳ Waiting for rollout to complete...'\",
-            \"kubectl rollout status deployment/${{ inputs.service_name }} -n $NAMESPACE --timeout=300s\",
+            \"kubectl rollout status deployment/${{ inputs.service_name }} -n default --timeout=300s\",
             \"echo '📋 Updated deployment status:'\",
-            \"kubectl get deployment ${{ inputs.service_name }} -n $NAMESPACE -o wide\",
-            \"kubectl get pods -l app=${{ inputs.service_name }} -n $NAMESPACE\",
+            \"kubectl get deployment ${{ inputs.service_name }} -n default -o wide\",
+            \"kubectl get pods -l app=${{ inputs.service_name }} -n default\",
             \"echo '✅ Deployment update completed successfully'\"
           ]" \
           --query 'Command.CommandId' \
