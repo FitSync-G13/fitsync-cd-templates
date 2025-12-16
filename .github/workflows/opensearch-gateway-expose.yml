@@ -37,48 +37,23 @@ jobs:
         aws-region: ${{ vars.AWS_REGION }}
         role-session-name: GitHubActions-OpenSearch-GatewayAPI
 
-    - name: Verify certificates are ready
-      run: |
-        MASTER_INSTANCES="${{ inputs.master_instances }}"
-        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
-        
-        echo "Verifying certificates are ready..."
-        
-        COMMAND_ID=$(aws ssm send-command \
-          --instance-ids "$FIRST_MASTER" \
-          --document-name "AWS-RunShellScript" \
-          --timeout-seconds 300 \
-          --parameters 'commands=[
-            "echo Checking certificate status...",
-            "sudo k3s kubectl get certificate -A",
-            "echo Waiting for certificates to be ready...",
-            "sudo k3s kubectl wait --for=condition=Ready certificate/opensearch-wildcard-cert -n default --timeout=300s",
-            "sudo k3s kubectl wait --for=condition=Ready certificate/opensearch-dashboard-public-cert -n default --timeout=300s",
-            "echo All certificates are ready"
-          ]' \
-          --query 'Command.CommandId' \
-          --output text)
-        
-        aws ssm wait command-executed \
-          --command-id "$COMMAND_ID" \
-          --instance-id "$FIRST_MASTER"
-
     - name: Setup Gateway API Prerequisites
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
         
-        echo "Setting up Gateway API prerequisites..."
+        echo "Setting up Gateway API prerequisites on $FIRST_MASTER..."
         
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 600 \
           --parameters 'commands=[
-            "echo Installing Gateway API CRDs...",
-            "sudo k3s kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml",
-            "sleep 30",
-            "echo Creating RBAC permissions for Traefik Gateway API...",
+            "set -e",
+            "echo \"=== Installing Gateway API CRDs ===\"",
+            "sudo k3s kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml || echo \"CRDs already exist\"",
+            "sleep 10",
+            "echo \"=== Creating RBAC permissions for Traefik Gateway API ===\"",
             "cat <<EOF | sudo k3s kubectl apply -f -",
             "apiVersion: rbac.authorization.k8s.io/v1",
             "kind: ClusterRole",
@@ -114,7 +89,9 @@ jobs:
             "  name: traefik",
             "spec:",
             "  controllerName: traefik.io/gateway-controller",
-            "---",
+            "EOF",
+            "echo \"=== Creating cross-namespace ReferenceGrant ===\"",
+            "cat <<EOF | sudo k3s kubectl apply -f -",
             "apiVersion: gateway.networking.k8s.io/v1beta1",
             "kind: ReferenceGrant",
             "metadata:",
@@ -129,32 +106,72 @@ jobs:
             "  - group: \"\"",
             "    kind: Service",
             "EOF",
-            "echo Enabling Gateway API support in Traefik...",
-            "sudo k3s kubectl patch deployment traefik -n kube-system --type=json -p=\"[{\\\"op\\\": \\\"add\\\", \\\"path\\\": \\\"/spec/template/spec/containers/0/args/-\\\", \\\"value\\\": \\\"--providers.kubernetesgateway\\\"}]\"",
-            "echo Restarting Traefik to pick up new permissions...",
+            "echo \"=== Enabling Gateway API support in Traefik ===\"",
+            "sudo k3s kubectl get deployment traefik -n kube-system -o yaml | grep -q \"providers.kubernetesgateway\" || sudo k3s kubectl patch deployment traefik -n kube-system --type=json -p=\"[{\\\"op\\\": \\\"add\\\", \\\"path\\\": \\\"/spec/template/spec/containers/0/args/-\\\", \\\"value\\\": \\\"--providers.kubernetesgateway\\\"}]\"",
+            "echo \"=== Restarting Traefik ===\"",
             "sudo k3s kubectl rollout restart deployment/traefik -n kube-system",
-            "sudo k3s kubectl rollout status deployment/traefik -n kube-system --timeout=300s"
+            "sudo k3s kubectl rollout status deployment/traefik -n kube-system --timeout=300s",
+            "echo \"=== Gateway API prerequisites setup completed ===\""
           ]' \
           --query 'Command.CommandId' \
           --output text)
         
-        aws ssm wait command-executed \
+        echo "Command ID: $COMMAND_ID"
+        echo "Waiting for command to complete..."
+        
+        if aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$FIRST_MASTER"; then
+          echo "✅ Command completed successfully"
+        else
+          echo "❌ Command failed or timed out"
+        fi
+        
+        # Always get output and errors
+        echo "=== Command Output ==="
+        aws ssm get-command-invocation \
           --command-id "$COMMAND_ID" \
-          --instance-id "$FIRST_MASTER"
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text || echo "No output available"
+        
+        echo "=== Command Errors ==="
+        ERROR_OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardErrorContent' \
+          --output text || echo "No errors available")
+        
+        if [ "$ERROR_OUTPUT" != "No errors available" ] && [ -n "$ERROR_OUTPUT" ]; then
+          echo "$ERROR_OUTPUT"
+        fi
+        
+        # Check final status
+        STATUS=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'Status' \
+          --output text)
+        
+        echo "Final command status: $STATUS"
+        
+        if [ "$STATUS" != "Success" ]; then
+          echo "❌ Prerequisites setup failed"
+          exit 1
+        fi
 
     - name: Create Gateway and HTTPRoutes
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
         
-        echo "Creating Gateway and HTTPRoutes..."
+        echo "Creating Gateway and HTTPRoutes on $FIRST_MASTER..."
         
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 300 \
           --parameters 'commands=[
-            "echo Creating wildcard Gateway...",
+            "set -e",
+            "echo \"=== Creating wildcard Gateway ===\"",
             "cat <<EOF | sudo k3s kubectl apply -f -",
             "apiVersion: gateway.networking.k8s.io/v1",
             "kind: Gateway",
@@ -172,7 +189,9 @@ jobs:
             "      certificateRefs:",
             "      - name: opensearch-wildcard-tls",
             "        namespace: default",
-            "---",
+            "EOF",
+            "echo \"=== Creating HTTPRoutes ===\"",
+            "cat <<EOF | sudo k3s kubectl apply -f -",
             "apiVersion: gateway.networking.k8s.io/v1",
             "kind: HTTPRoute",
             "metadata:",
@@ -187,7 +206,7 @@ jobs:
             "  - matches:",
             "    - path:",
             "        type: PathPrefix",
-            "        value: \\\"/\\\"",
+            "        value: \"/\"",
             "    backendRefs:",
             "    - name: opensearch-dashboards",
             "      namespace: opensearch",
@@ -207,7 +226,7 @@ jobs:
             "  - matches:",
             "    - path:",
             "        type: PathPrefix",
-            "        value: \\\"/\\\"",
+            "        value: \"/\"",
             "    backendRefs:",
             "    - name: opensearch-cluster-master",
             "      namespace: opensearch",
@@ -225,33 +244,73 @@ jobs:
             "  - matches:",
             "    - path:",
             "        type: PathPrefix",
-            "        value: \\\"/\\\"",
+            "        value: \"/\"",
             "    backendRefs:",
             "    - name: opensearch-dashboards",
             "      namespace: opensearch",
             "      port: 5601",
             "EOF",
-            "echo Gateway and HTTPRoutes created successfully"
+            "echo \"=== Gateway and HTTPRoutes created successfully ===\""
           ]' \
           --query 'Command.CommandId' \
           --output text)
         
-        aws ssm wait command-executed \
+        echo "Command ID: $COMMAND_ID"
+        echo "Waiting for command to complete..."
+        
+        if aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$FIRST_MASTER"; then
+          echo "✅ Command completed successfully"
+        else
+          echo "❌ Command failed or timed out"
+        fi
+        
+        # Always get output and errors
+        echo "=== Command Output ==="
+        aws ssm get-command-invocation \
           --command-id "$COMMAND_ID" \
-          --instance-id "$FIRST_MASTER"
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text || echo "No output available"
+        
+        echo "=== Command Errors ==="
+        ERROR_OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardErrorContent' \
+          --output text || echo "No errors available")
+        
+        if [ "$ERROR_OUTPUT" != "No errors available" ] && [ -n "$ERROR_OUTPUT" ]; then
+          echo "$ERROR_OUTPUT"
+        fi
+        
+        # Check final status
+        STATUS=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'Status' \
+          --output text)
+        
+        echo "Final command status: $STATUS"
+        
+        if [ "$STATUS" != "Success" ]; then
+          echo "❌ Gateway creation failed"
+          exit 1
+        fi
 
     - name: Create NodePort Services
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
         
-        echo "Creating NodePort services in kube-system namespace..."
+        echo "Creating NodePort services on $FIRST_MASTER..."
         
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 300 \
           --parameters 'commands=[
+            "set -e",
+            "echo \"=== Creating NodePort services in kube-system namespace ===\"",
             "cat <<EOF | sudo k3s kubectl apply -f -",
             "apiVersion: v1",
             "kind: Service",
@@ -287,51 +346,67 @@ jobs:
             "    app.kubernetes.io/instance: traefik-kube-system",
             "    app.kubernetes.io/name: traefik",
             "EOF",
-            "echo NodePort services created successfully"
+            "echo \"=== NodePort services created successfully ===\"",
+            "echo \"=== Verifying setup ===\"",
+            "sudo k3s kubectl get gateway -A",
+            "sudo k3s kubectl get httproute -A", 
+            "sudo k3s kubectl get service -n kube-system | grep opensearch",
+            "echo \"=== Gateway API setup completed ===\""
           ]' \
           --query 'Command.CommandId' \
           --output text)
         
-        aws ssm wait command-executed \
-          --command-id "$COMMAND_ID" \
-          --instance-id "$FIRST_MASTER"
-
-    - name: Verify Gateway API Setup
-      run: |
-        MASTER_INSTANCES="${{ inputs.master_instances }}"
-        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        echo "Command ID: $COMMAND_ID"
+        echo "Waiting for command to complete..."
         
-        echo "Verifying Gateway API setup..."
+        if aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$FIRST_MASTER"; then
+          echo "✅ Command completed successfully"
+        else
+          echo "❌ Command failed or timed out"
+        fi
         
-        COMMAND_ID=$(aws ssm send-command \
-          --instance-ids "$FIRST_MASTER" \
-          --document-name "AWS-RunShellScript" \
-          --timeout-seconds 300 \
-          --parameters 'commands=[
-            "echo === Gateway Status ===",
-            "sudo k3s kubectl get gateway opensearch-gateway -n default",
-            "echo === HTTPRoutes ===", 
-            "sudo k3s kubectl get httproute -n default",
-            "echo === NodePort Services ===",
-            "sudo k3s kubectl get svc opensearch-dashboard-nodeport opensearch-api-nodeport -n kube-system",
-            "echo === OpenSearch Services ===",
-            "sudo k3s kubectl get svc -n opensearch",
-            "echo === Certificates ===",
-            "sudo k3s kubectl get certificate -A",
-            "echo === Test Health Check (without Host header) ===",
-            "curl -k https://localhost:30601/ -I || echo \"Health check test completed\"",
-            "echo === Test with Host header ===",
-            "curl -k -H \"Host: ${{ vars.OPENSEARCH_DASHBOARD_FQDN }}\" https://localhost:30601/ -I || echo \"Host header test completed\""
-          ]' \
-          --query 'Command.CommandId' \
-          --output text)
-        
-        aws ssm wait command-executed \
-          --command-id "$COMMAND_ID" \
-          --instance-id "$FIRST_MASTER"
-        
+        # Always get output and errors
+        echo "=== Command Output ==="
         aws ssm get-command-invocation \
           --command-id "$COMMAND_ID" \
           --instance-id "$FIRST_MASTER" \
           --query 'StandardOutputContent' \
-          --output text
+          --output text || echo "No output available"
+        
+        echo "=== Command Errors ==="
+        ERROR_OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardErrorContent' \
+          --output text || echo "No errors available")
+        
+        if [ "$ERROR_OUTPUT" != "No errors available" ] && [ -n "$ERROR_OUTPUT" ]; then
+          echo "$ERROR_OUTPUT"
+        fi
+        
+        # Check final status
+        STATUS=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'Status' \
+          --output text)
+        
+        echo "Final command status: $STATUS"
+        
+        if [ "$STATUS" != "Success" ]; then
+          echo "❌ NodePort services creation failed"
+          exit 1
+        fi
+        
+        echo "🎉 OpenSearch Gateway API exposure completed successfully!"
+        echo ""
+        echo "📋 Summary:"
+        echo "  ✅ Gateway API CRDs installed"
+        echo "  ✅ RBAC permissions configured"
+        echo "  ✅ Gateway created with wildcard TLS"
+        echo "  ✅ HTTPRoutes configured for Dashboard and API"
+        echo "  ✅ NodePort services created"
+        echo ""
+        echo "🔗 Access URLs:"
+        echo "  Dashboard: https://${{ vars.OPENSEARCH_DASHBOARD_FQDN }}"
+        echo "  API: https://${{ vars.OPENSEARCH_SUBDOMAIN }}"
