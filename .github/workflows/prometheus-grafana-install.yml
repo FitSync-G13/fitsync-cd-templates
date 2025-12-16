@@ -60,9 +60,6 @@ jobs:
             "sleep 60",
             "sudo k3s kubectl get pods -n cilium-monitoring"
           ]'
-        
-        sleep 90
-        echo "Prometheus and Grafana installed"
 
     - name: Configure Grafana for subpath
       run: |
@@ -74,8 +71,7 @@ jobs:
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "sudo k3s kubectl patch configmap grafana-config -n cilium-monitoring --patch=\"{\\\"data\\\":{\\\"grafana.ini\\\":\\\"[server]\\nroot_url = %(protocol)s://%(domain)s:%(http_port)s/grafana/\\nserve_from_sub_path = true\\n\\\"}}\"",
-            "sudo k3s kubectl rollout restart deployment/grafana -n cilium-monitoring",
-            "sleep 30"
+            "sudo k3s kubectl rollout restart deployment/grafana -n cilium-monitoring"
           ]'
 
     - name: Create Grafana VirtualService
@@ -107,63 +103,13 @@ jobs:
             "echo \"        host: grafana.cilium-monitoring.svc.cluster.local\" >> /tmp/grafana-vs.yaml",
             "echo \"        port:\" >> /tmp/grafana-vs.yaml",
             "echo \"          number: 3000\" >> /tmp/grafana-vs.yaml",
-            "sudo k3s kubectl apply -f /tmp/grafana-vs.yaml",
-            "rm /tmp/grafana-vs.yaml"
-          ]'
-
-    - name: Create Prometheus VirtualService
-      run: |
-        MASTER_INSTANCES="${{ inputs.master_instances }}"
-        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
-        GATEWAY_NAME="${{ inputs.environment }}-gateway"
-        
-        aws ssm send-command \
-          --instance-ids "$FIRST_MASTER" \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "echo \"apiVersion: networking.istio.io/v1beta1\" > /tmp/prometheus-vs.yaml",
-            "echo \"kind: VirtualService\" >> /tmp/prometheus-vs.yaml",
-            "echo \"metadata:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"  name: prometheus-monitoring\" >> /tmp/prometheus-vs.yaml",
-            "echo \"  namespace: cilium-monitoring\" >> /tmp/prometheus-vs.yaml",
-            "echo \"spec:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"  hosts:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"  - \\\"*\\\"\" >> /tmp/prometheus-vs.yaml",
-            "echo \"  gateways:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"  - istio-system/'${GATEWAY_NAME}'\" >> /tmp/prometheus-vs.yaml",
-            "echo \"  http:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"  - match:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"    - uri:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"        prefix: /prometheus\" >> /tmp/prometheus-vs.yaml",
-            "echo \"    route:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"    - destination:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"        host: prometheus.cilium-monitoring.svc.cluster.local\" >> /tmp/prometheus-vs.yaml",
-            "echo \"        port:\" >> /tmp/prometheus-vs.yaml",
-            "echo \"          number: 9090\" >> /tmp/prometheus-vs.yaml",
-            "sudo k3s kubectl apply -f /tmp/prometheus-vs.yaml",
-            "rm /tmp/prometheus-vs.yaml"
-          ]'
-
-    - name: Configure Prometheus for subpath
-      run: |
-        MASTER_INSTANCES="${{ inputs.master_instances }}"
-        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
-        
-        aws ssm send-command \
-          --instance-ids "$FIRST_MASTER" \
-          --document-name "AWS-RunShellScript" \
-          --parameters 'commands=[
-            "sudo k3s kubectl patch deployment prometheus -n cilium-monitoring --patch=\"{\\\"spec\\\":{\\\"template\\\":{\\\"spec\\\":{\\\"containers\\\":[{\\\"name\\\":\\\"prometheus\\\",\\\"args\\\":[\\\"--config.file=/etc/prometheus/prometheus.yml\\\",\\\"--storage.tsdb.path=/prometheus/\\\",\\\"--web.console.libraries=/etc/prometheus/console_libraries\\\",\\\"--web.console.templates=/etc/prometheus/consoles\\\",\\\"--web.enable-lifecycle\\\",\\\"--web.external-url=/prometheus/\\\",\\\"--web.route-prefix=/\\\"]}]}}}}\"",
-            "sudo k3s kubectl rollout restart deployment/prometheus -n cilium-monitoring",
-            "sleep 30"
+            "sudo k3s kubectl apply -f /tmp/grafana-vs.yaml"
           ]'
 
     - name: Verify Installation
       run: |
         MASTER_INSTANCES="${{ inputs.master_instances }}"
         FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
-        
-        sleep 30
         
         aws ssm send-command \
           --instance-ids "$FIRST_MASTER" \
@@ -172,5 +118,3 @@ jobs:
             "sudo k3s kubectl get pods -n cilium-monitoring",
             "sudo k3s kubectl get virtualservice -n cilium-monitoring"
           ]'
-        
-        echo "Installation completed. Access via /grafana and /prometheus"
