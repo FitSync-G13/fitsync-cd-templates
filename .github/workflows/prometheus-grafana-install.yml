@@ -215,8 +215,6 @@ EOF",
           ]' \
           --query 'Command.CommandId' \
           --output text)
-          --query 'Command.CommandId' \
-          --output text)
         
         echo "VirtualService Command ID: $VIRTUALSERVICE_COMMAND"
         echo "Waiting for VirtualService creation to complete..."
