@@ -163,7 +163,7 @@ jobs:
           --timeout-seconds 300 \
           --parameters "commands=[
             \"echo 'Creating Grafana VirtualService...'\",
-            \"cat > /tmp/grafana-virtualservice.yaml << 'EOF'
+            \"cat > /tmp/grafana-virtualservice.yaml << 'EOFGRAFANA'
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -171,7 +171,7 @@ metadata:
   namespace: cilium-monitoring
 spec:
   hosts:
-  - \\\"*\\\"
+  - '*'
   gateways:
   - istio-system/${GATEWAY_NAME}
   http:
@@ -185,10 +185,10 @@ spec:
         host: grafana.cilium-monitoring.svc.cluster.local
         port:
           number: 3000
-EOF\",
+EOFGRAFANA\",
             \"sudo k3s kubectl apply -f /tmp/grafana-virtualservice.yaml\",
             \"echo 'Creating Prometheus VirtualService...'\",
-            \"cat > /tmp/prometheus-virtualservice.yaml << 'EOF'
+            \"cat > /tmp/prometheus-virtualservice.yaml << 'EOFPROMETHEUS'
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -196,7 +196,7 @@ metadata:
   namespace: cilium-monitoring
 spec:
   hosts:
-  - \\\"*\\\"
+  - '*'
   gateways:
   - istio-system/${GATEWAY_NAME}
   http:
@@ -210,7 +210,7 @@ spec:
         host: prometheus.cilium-monitoring.svc.cluster.local
         port:
           number: 9090
-EOF\",
+EOFPROMETHEUS\",
             \"sudo k3s kubectl apply -f /tmp/prometheus-virtualservice.yaml\",
             \"rm /tmp/grafana-virtualservice.yaml /tmp/prometheus-virtualservice.yaml\",
             \"echo 'VirtualServices created successfully'\",
