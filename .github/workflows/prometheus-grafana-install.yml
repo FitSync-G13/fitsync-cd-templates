@@ -161,9 +161,9 @@ jobs:
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 300 \
-          --parameters "commands=[
-            \"echo 'Creating Grafana VirtualService...'\",
-            \"cat > /tmp/grafana-virtualservice.yaml << 'EOFGRAFANA'
+          --parameters 'commands=[
+            "echo Creating Grafana VirtualService...",
+            "cat > /tmp/grafana-virtualservice.yaml << EOF
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -171,9 +171,9 @@ metadata:
   namespace: cilium-monitoring
 spec:
   hosts:
-  - '*'
+  - \"*\"
   gateways:
-  - istio-system/${GATEWAY_NAME}
+  - istio-system/'${GATEWAY_NAME}'
   http:
   - match:
     - uri:
@@ -185,10 +185,10 @@ spec:
         host: grafana.cilium-monitoring.svc.cluster.local
         port:
           number: 3000
-EOFGRAFANA\",
-            \"sudo k3s kubectl apply -f /tmp/grafana-virtualservice.yaml\",
-            \"echo 'Creating Prometheus VirtualService...'\",
-            \"cat > /tmp/prometheus-virtualservice.yaml << 'EOFPROMETHEUS'
+EOF",
+            "sudo k3s kubectl apply -f /tmp/grafana-virtualservice.yaml",
+            "echo Creating Prometheus VirtualService...",
+            "cat > /tmp/prometheus-virtualservice.yaml << EOF
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -196,9 +196,9 @@ metadata:
   namespace: cilium-monitoring
 spec:
   hosts:
-  - '*'
+  - \"*\"
   gateways:
-  - istio-system/${GATEWAY_NAME}
+  - istio-system/'${GATEWAY_NAME}'
   http:
   - match:
     - uri:
@@ -210,12 +210,12 @@ spec:
         host: prometheus.cilium-monitoring.svc.cluster.local
         port:
           number: 9090
-EOFPROMETHEUS\",
-            \"sudo k3s kubectl apply -f /tmp/prometheus-virtualservice.yaml\",
-            \"rm /tmp/grafana-virtualservice.yaml /tmp/prometheus-virtualservice.yaml\",
-            \"echo 'VirtualServices created successfully'\",
-            \"sudo k3s kubectl get virtualservice -n cilium-monitoring\"
-          ]" \
+EOF",
+            "sudo k3s kubectl apply -f /tmp/prometheus-virtualservice.yaml",
+            "rm /tmp/grafana-virtualservice.yaml /tmp/prometheus-virtualservice.yaml",
+            "echo VirtualServices created successfully",
+            "sudo k3s kubectl get virtualservice -n cilium-monitoring"
+          ]' \
           --query 'Command.CommandId' \
           --output text)
         
