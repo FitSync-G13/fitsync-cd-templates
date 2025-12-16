@@ -1,0 +1,408 @@
+name: OpenSearch Helm Deploy
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'OpenSearch K3s cluster name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of OpenSearch master instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+      opensearch_version:
+        description: 'OpenSearch version (leave empty for latest)'
+        required: false
+        type: string
+        default: ''
+      opensearch_dashboards_version:
+        description: 'OpenSearch Dashboards version (leave empty for latest)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-opensearch:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-OpenSearch-Helm
+
+    - name: Generate and store OpenSearch admin password
+      id: generate-password
+      run: |
+        echo "Generating secure admin password for OpenSearch..."
+        
+        # Generate a strong password (32 characters, alphanumeric + special chars)
+        ADMIN_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-32)
+        
+        # Secret name following the same pattern as database secrets
+        SECRET_NAME="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/opensearch-admin-password"
+        
+        echo "Creating/updating secret: $SECRET_NAME"
+        
+        # Try to create the secret, if it exists, update it
+        if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
+          echo "Secret exists, updating..."
+          aws secretsmanager update-secret \
+            --secret-id "$SECRET_NAME" \
+            --secret-string "$ADMIN_PASSWORD"
+          echo "✅ Updated existing OpenSearch admin password secret"
+        else
+          echo "Creating new secret..."
+          aws secretsmanager create-secret \
+            --name "$SECRET_NAME" \
+            --description "OpenSearch admin password for ${{ inputs.environment }}" \
+            --secret-string "$ADMIN_PASSWORD" \
+            --tags '[{"Key":"Project","Value":"${{ vars.PROJECT_NAME }}"},{"Key":"Environment","Value":"${{ inputs.environment }}"},{"Key":"Service","Value":"opensearch"}]'
+          echo "✅ Created new OpenSearch admin password secret"
+        fi
+        
+        # Store password for use in deployment (masked in logs)
+        echo "::add-mask::$ADMIN_PASSWORD"
+        echo "admin_password=$ADMIN_PASSWORD" >> $GITHUB_OUTPUT
+
+    - name: Deploy OpenSearch using Helm
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        ADMIN_PASSWORD="${{ steps.generate-password.outputs.admin_password }}"
+        
+        echo "Deploying OpenSearch using official Helm chart..."
+        
+        # Determine versions
+        OPENSEARCH_VERSION="${{ inputs.opensearch_version }}"
+        DASHBOARDS_VERSION="${{ inputs.opensearch_dashboards_version }}"
+        
+        VERSION_FLAG=""
+        if [ -n "$OPENSEARCH_VERSION" ]; then
+          VERSION_FLAG="--version $OPENSEARCH_VERSION"
+        fi
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 1200 \
+          --parameters "commands=[
+            \"echo 'Setting up Helm and OpenSearch repository...'\",
+            \"curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3\",
+            \"chmod 700 get_helm.sh\",
+            \"./get_helm.sh\",
+            \"sudo k3s kubectl create namespace opensearch --dry-run=client -o yaml | sudo k3s kubectl apply -f -\",
+            \"helm repo add opensearch https://opensearch-project.github.io/helm-charts/\",
+            \"helm repo update\",
+            \"echo 'Checking for existing OpenSearch deployment...'\",
+            \"if helm list -n opensearch | grep -q opensearch-cluster; then\",
+            \"  echo 'OpenSearch already deployed, upgrading...'\",
+            \"  HELM_ACTION='upgrade'\",
+            \"else\",
+            \"  echo 'New OpenSearch deployment'\",
+            \"  HELM_ACTION='install'\",
+            \"fi\",
+            \"echo 'Creating OpenSearch values file...'\",
+            \"cat <<EOF > /tmp/opensearch-values.yaml\",
+            \"# OpenSearch configuration\",
+            \"clusterName: \\\"opensearch-cluster\\\"\",
+            \"nodeGroup: \\\"master\\\"\",
+            \"\",
+            \"# Set the application version\",
+            \"image:\",
+            \"  tag: \\\"$OPENSEARCH_VERSION\\\"\",
+            \"\",
+            \"# Cluster topology\",
+            \"masterService: \\\"opensearch-cluster-master\\\"\",
+            \"replicas: ${{ vars.OPENSEARCH_MASTER_COUNT || '3' }}\",
+            \"\",
+            \"# OpenSearch roles\",
+            \"roles:\",
+            \"  - master\",
+            \"  - ingest\",
+            \"  - data\",
+            \"  - remote_cluster_client\",
+            \"\",
+            \"# Resources\",
+            \"resources:\",
+            \"  requests:\",
+            \"    cpu: \\\"1000m\\\"\",
+            \"    memory: \\\"2Gi\\\"\",
+            \"  limits:\",
+            \"    cpu: \\\"1000m\\\"\",
+            \"    memory: \\\"2Gi\\\"\",
+            \"\",
+            \"# JVM heap size (should be 50% of memory limit)\",
+            \"opensearchJavaOpts: \\\"-Xmx1g -Xms1g\\\"\",
+            \"\",
+            \"# Persistence using EBS CSI\",
+            \"persistence:\",
+            \"  enabled: true\",
+            \"  storageClass: \\\"ebs-sc\\\"\",
+            \"  accessModes:\",
+            \"    - ReadWriteOnce\",
+            \"  size: 30Gi\",
+            \"\",
+            \"# Security configuration\",
+            \"config:\",
+            \"  opensearch.yml: |-\",
+            \"    cluster.name: opensearch-cluster\",
+            \"    network.host: 0.0.0.0\",
+            \"    plugins.security.ssl.transport.pemcert_filepath: esnode.pem\",
+            \"    plugins.security.ssl.transport.pemkey_filepath: esnode-key.pem\",
+            \"    plugins.security.ssl.transport.pemtrustedcas_filepath: root-ca.pem\",
+            \"    plugins.security.ssl.transport.enforce_hostname_verification: false\",
+            \"    plugins.security.ssl.http.enabled: true\",
+            \"    plugins.security.ssl.http.pemcert_filepath: esnode.pem\",
+            \"    plugins.security.ssl.http.pemkey_filepath: esnode-key.pem\",
+            \"    plugins.security.ssl.http.pemtrustedcas_filepath: root-ca.pem\",
+            \"    plugins.security.allow_unsafe_democertificates: true\",
+            \"    plugins.security.allow_default_init_securityindex: true\",
+            \"    plugins.security.authcz.admin_dn:\",
+            \"      - CN=kirk,OU=client,O=client,L=test,C=de\",
+            \"    plugins.security.audit.type: internal_opensearch\",
+            \"    plugins.security.enable_snapshot_restore_privilege: true\",
+            \"    plugins.security.check_snapshot_restore_write_privileges: true\",
+            \"    plugins.security.restapi.roles_enabled: [\\\"all_access\\\", \\\"security_rest_api_access\\\"]\",
+            \"    cluster.routing.allocation.disk.threshold_enabled: false\",
+            \"    node.store.allow_mmap: false\",
+            \"\",
+            \"# Environment variables including admin password\",
+            \"extraEnvs:\",
+            \"  - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD\",
+            \"    value: \\\"$ADMIN_PASSWORD\\\"\",
+            \"  - name: DISABLE_INSTALL_DEMO_CONFIG\",
+            \"    value: \\\"true\\\"\",
+            \"\",
+            \"# Service configuration\",
+            \"service:\",
+            \"  type: ClusterIP\",
+            \"  httpPort: 9200\",
+            \"  transportPort: 9300\",
+            \"\",
+            \"# Security context\",
+            \"securityContext:\",
+            \"  fsGroup: 1000\",
+            \"  runAsUser: 1000\",
+            \"\",
+            \"# Pod security context\",
+            \"podSecurityContext:\",
+            \"  fsGroup: 1000\",
+            \"  runAsUser: 1000\",
+            \"  runAsNonRoot: true\",
+            \"\",
+            \"# Sysctls for OpenSearch\",
+            \"sysctlVmMaxMapCount: 262144\",
+            \"\",
+            \"# Readiness and liveness probes\",
+            \"readinessProbe:\",
+            \"  failureThreshold: 3\",
+            \"  periodSeconds: 5\",
+            \"  timeoutSeconds: 3\",
+            \"  initialDelaySeconds: 60\",
+            \"\",
+            \"# Anti-affinity to spread pods across nodes\",
+            \"antiAffinity: \\\"soft\\\"\",
+            \"EOF\",
+            \"echo 'Deploying OpenSearch with Helm...'\",
+            \"helm \\\$HELM_ACTION opensearch-cluster opensearch/opensearch $VERSION_FLAG \\\\\",
+            \"  --namespace opensearch \\\\\",
+            \"  --values /tmp/opensearch-values.yaml \\\\\",
+            \"  --timeout 15m \\\\\",
+            \"  --wait\",
+            \"echo 'Waiting for OpenSearch pods to be ready...'\",
+            \"sudo k3s kubectl wait --for=condition=ready pod -l app=opensearch-master -n opensearch --timeout=900s\",
+            \"echo 'Verifying OpenSearch cluster health...'\",
+            \"sudo k3s kubectl exec -n opensearch opensearch-cluster-master-0 -- curl -XGET https://localhost:9200/_cluster/health -u admin:\\\$OPENSEARCH_INITIAL_ADMIN_PASSWORD --insecure\",
+            \"echo 'OpenSearch cluster deployed successfully using Helm chart'\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        OUTPUT=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text)
+        
+        echo "$OUTPUT"
+        
+        # Check if deployment was successful
+        if echo "$OUTPUT" | grep -q "OpenSearch cluster deployed successfully"; then
+          echo "✅ OpenSearch deployment completed successfully"
+        else
+          echo "❌ OpenSearch deployment may have failed"
+          # Get error output
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$FIRST_MASTER" \
+            --query 'StandardErrorContent' \
+            --output text
+          exit 1
+        fi
+
+    - name: Deploy OpenSearch Dashboards
+      if: ${{ vars.OPENSEARCH_DASHBOARDS_ENABLED != 'false' }}
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Deploying OpenSearch Dashboards..."
+        
+        # Determine version
+        DASHBOARDS_VERSION="${{ inputs.opensearch_dashboards_version }}"
+        VERSION_FLAG=""
+        if [ -n "$DASHBOARDS_VERSION" ]; then
+          VERSION_FLAG="--version $DASHBOARDS_VERSION"
+        fi
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 600 \
+          --parameters "commands=[
+            \"echo 'Creating OpenSearch Dashboards values file...'\",
+            \"cat <<EOF > /tmp/dashboards-values.yaml\",
+            \"# OpenSearch Dashboards configuration\",
+            \"opensearchHosts: \\\"https://opensearch-cluster-master:9200\\\"\",
+            \"replicaCount: 1\",
+            \"\",
+            \"# Set the application version\",
+            \"image:\",
+            \"  tag: \\\"$DASHBOARDS_VERSION\\\"\",
+            \"\",
+            \"# Resources\",
+            \"resources:\",
+            \"  requests:\",
+            \"    cpu: \\\"100m\\\"\",
+            \"    memory: \\\"512Mi\\\"\",
+            \"  limits:\",
+            \"    cpu: \\\"500m\\\"\",
+            \"    memory: \\\"1Gi\\\"\",
+            \"\",
+            \"# Service configuration\",
+            \"service:\",
+            \"  type: ClusterIP\",
+            \"  port: 5601\",
+            \"\",
+            \"# OpenSearch Dashboards configuration\",
+            \"config:\",
+            \"  opensearch_dashboards.yml: |-\",
+            \"    server.name: opensearch-dashboards\",
+            \"    server.host: 0.0.0.0\",
+            \"    opensearch.hosts: [https://opensearch-cluster-master:9200]\",
+            \"    opensearch.ssl.verificationMode: none\",
+            \"    opensearch.username: admin\",
+            \"    opensearch.password: \\\${OPENSEARCH_PASSWORD}\",
+            \"    opensearch.requestHeadersAllowlist: [authorization, securitytenant]\",
+            \"\",
+            \"# Environment variables\",
+            \"extraEnvs:\",
+            \"  - name: OPENSEARCH_PASSWORD\",
+            \"    value: \\\"${{ steps.generate-password.outputs.admin_password }}\\\"\",
+            \"\",
+            \"# Security context\",
+            \"securityContext:\",
+            \"  runAsUser: 1000\",
+            \"  runAsGroup: 1000\",
+            \"  fsGroup: 1000\",
+            \"EOF\",
+            \"echo 'Checking for existing Dashboards deployment...'\",
+            \"if helm list -n opensearch | grep -q opensearch-dashboards; then\",
+            \"  echo 'OpenSearch Dashboards already deployed, upgrading...'\",
+            \"  HELM_ACTION='upgrade'\",
+            \"else\",
+            \"  echo 'New OpenSearch Dashboards deployment'\",
+            \"  HELM_ACTION='install'\",
+            \"fi\",
+            \"echo 'Deploying OpenSearch Dashboards with Helm...'\",
+            \"helm \\\$HELM_ACTION opensearch-dashboards opensearch/opensearch-dashboards $VERSION_FLAG \\\\\",
+            \"  --namespace opensearch \\\\\",
+            \"  --values /tmp/dashboards-values.yaml \\\\\",
+            \"  --timeout 10m \\\\\",
+            \"  --wait\",
+            \"echo 'Waiting for Dashboards pods to be ready...'\",
+            \"sudo k3s kubectl wait --for=condition=ready pod -l app=opensearch-dashboards -n opensearch --timeout=600s\",
+            \"echo 'OpenSearch Dashboards deployed successfully'\"
+          ]" \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
+
+    - name: Store OpenSearch connection details in Secrets Manager
+      run: |
+        echo "Storing OpenSearch connection details in AWS Secrets Manager..."
+        
+        # OpenSearch cluster endpoint (internal)
+        OPENSEARCH_ENDPOINT="https://opensearch-cluster-master.opensearch.svc.cluster.local:9200"
+        
+        # OpenSearch Dashboards endpoint (internal)
+        DASHBOARDS_ENDPOINT="http://opensearch-dashboards.opensearch.svc.cluster.local:5601"
+        
+        # Create connection string secret
+        CONNECTION_SECRET_NAME="${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/opensearch-connection"
+        
+        CONNECTION_JSON=$(cat <<EOF
+{
+  "endpoint": "$OPENSEARCH_ENDPOINT",
+  "dashboards_endpoint": "$DASHBOARDS_ENDPOINT",
+  "username": "admin",
+  "namespace": "opensearch",
+  "cluster_name": "opensearch-cluster"
+}
+EOF
+)
+        
+        if aws secretsmanager describe-secret --secret-id "$CONNECTION_SECRET_NAME" >/dev/null 2>&1; then
+          echo "Updating existing connection secret..."
+          aws secretsmanager update-secret \
+            --secret-id "$CONNECTION_SECRET_NAME" \
+            --secret-string "$CONNECTION_JSON"
+        else
+          echo "Creating new connection secret..."
+          aws secretsmanager create-secret \
+            --name "$CONNECTION_SECRET_NAME" \
+            --description "OpenSearch connection details for ${{ inputs.environment }}" \
+            --secret-string "$CONNECTION_JSON" \
+            --tags '[{"Key":"Project","Value":"${{ vars.PROJECT_NAME }}"},{"Key":"Environment","Value":"${{ inputs.environment }}"},{"Key":"Service","Value":"opensearch"}]'
+        fi
+        
+        echo "✅ OpenSearch connection details stored in: $CONNECTION_SECRET_NAME"
+        echo ""
+        echo "📋 Deployment Summary:"
+        echo "  OpenSearch Cluster: opensearch-cluster (namespace: opensearch)"
+        echo "  Admin Password Secret: ${{ vars.PROJECT_NAME }}/${{ inputs.environment }}/opensearch-admin-password"
+        echo "  Connection Details Secret: $CONNECTION_SECRET_NAME"
+        echo "  Internal Endpoint: $OPENSEARCH_ENDPOINT"
+        if [ "${{ vars.OPENSEARCH_DASHBOARDS_ENABLED }}" != "false" ]; then
+          echo "  Dashboards Endpoint: $DASHBOARDS_ENDPOINT"
+        fi
