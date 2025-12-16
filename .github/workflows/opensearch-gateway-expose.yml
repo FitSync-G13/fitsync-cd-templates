@@ -1,0 +1,278 @@
+name: OpenSearch Gateway API Expose
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: 'OpenSearch K3s cluster name'
+        required: true
+        type: string
+      master_instances:
+        description: 'Comma-separated list of OpenSearch master instance IDs'
+        required: true
+        type: string
+      environment:
+        description: 'GitHub environment name'
+        required: false
+        type: string
+        default: 'production'
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  install-gateway-api:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-OpenSearch-GatewayAPI
+
+    - name: Install Gateway API CRDs and Controller
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Installing Gateway API CRDs and Controller..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 600 \
+          --parameters 'commands=[
+            "echo Installing Gateway API CRDs...",
+            "sudo k3s kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml",
+            "echo Waiting for CRDs to be ready...",
+            "sleep 30",
+            "echo Installing Traefik Gateway API support...",
+            "sudo k3s kubectl patch deployment traefik -n kube-system --type=json -p='\''[{\"op\": \"add\", \"path\": \"/spec/template/spec/containers/0/args/-\", \"value\": \"--providers.kubernetesgateway\"}]'\''",
+            "echo Waiting for Traefik to restart...",
+            "sudo k3s kubectl rollout status deployment/traefik -n kube-system --timeout=300s",
+            "echo Gateway API setup complete"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
+
+  create-gateway-resources:
+    needs: install-gateway-api
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-session-name: GitHubActions-OpenSearch-Gateway
+
+    - name: Verify certificates are ready
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying certificates are ready..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
+          --parameters 'commands=[
+            "echo Checking certificate status...",
+            "sudo k3s kubectl get certificate -A",
+            "echo Waiting for certificates to be ready...",
+            "sudo k3s kubectl wait --for=condition=Ready certificate/opensearch-wildcard-cert -n default --timeout=300s",
+            "sudo k3s kubectl wait --for=condition=Ready certificate/opensearch-dashboard-public-cert -n default --timeout=300s",
+            "echo All certificates are ready"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
+
+    - name: Create Gateway and HTTPRoutes for OpenSearch
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Creating Gateway and HTTPRoutes for OpenSearch..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
+          --parameters 'commands=[
+            "echo Creating Gateway for OpenSearch...",
+            "cat <<EOF | sudo k3s kubectl apply -f -",
+            "apiVersion: gateway.networking.k8s.io/v1",
+            "kind: Gateway",
+            "metadata:",
+            "  name: opensearch-gateway",
+            "  namespace: default",
+            "spec:",
+            "  gatewayClassName: traefik",
+            "  listeners:",
+            "  - name: opensearch-dashboard-https",
+            "    port: 30601",
+            "    protocol: HTTPS",
+            "    hostname: ${{ vars.OPENSEARCH_DASHBOARD_FQDN }}",
+            "    tls:",
+            "      mode: Terminate",
+            "      certificateRefs:",
+            "      - name: opensearch-dashboard-public-tls",
+            "        namespace: default",
+            "  - name: opensearch-api-https", 
+            "    port: 30920",
+            "    protocol: HTTPS",
+            "    hostname: ${{ vars.OPENSEARCH_SUBDOMAIN }}",
+            "    tls:",
+            "      mode: Terminate",
+            "      certificateRefs:",
+            "      - name: opensearch-wildcard-tls",
+            "        namespace: default",
+            "---",
+            "apiVersion: gateway.networking.k8s.io/v1",
+            "kind: HTTPRoute",
+            "metadata:",
+            "  name: opensearch-dashboard-route",
+            "  namespace: default",
+            "spec:",
+            "  parentRefs:",
+            "  - name: opensearch-gateway",
+            "    sectionName: opensearch-dashboard-https",
+            "  hostnames:",
+            "  - ${{ vars.OPENSEARCH_DASHBOARD_FQDN }}",
+            "  rules:",
+            "  - backendRefs:",
+            "    - name: opensearch-dashboards",
+            "      namespace: opensearch",
+            "      port: 5601",
+            "---",
+            "apiVersion: gateway.networking.k8s.io/v1",
+            "kind: HTTPRoute", 
+            "metadata:",
+            "  name: opensearch-api-route",
+            "  namespace: default",
+            "spec:",
+            "  parentRefs:",
+            "  - name: opensearch-gateway",
+            "    sectionName: opensearch-api-https",
+            "  hostnames:",
+            "  - ${{ vars.OPENSEARCH_SUBDOMAIN }}",
+            "  rules:",
+            "  - backendRefs:",
+            "    - name: opensearch-cluster-master",
+            "      namespace: opensearch",
+            "      port: 9200",
+            "---",
+            "apiVersion: v1",
+            "kind: Service",
+            "metadata:",
+            "  name: opensearch-dashboard-nodeport",
+            "  namespace: default",
+            "spec:",
+            "  type: NodePort",
+            "  ports:",
+            "  - name: https",
+            "    port: 443",
+            "    targetPort: 30601",
+            "    nodePort: 30601",
+            "    protocol: TCP",
+            "  selector:",
+            "    app.kubernetes.io/name: traefik",
+            "---",
+            "apiVersion: v1",
+            "kind: Service",
+            "metadata:",
+            "  name: opensearch-api-nodeport", 
+            "  namespace: default",
+            "spec:",
+            "  type: NodePort",
+            "  ports:",
+            "  - name: https",
+            "    port: 443",
+            "    targetPort: 30920",
+            "    nodePort: 30920",
+            "    protocol: TCP",
+            "  selector:",
+            "    app.kubernetes.io/name: traefik",
+            "EOF",
+            "echo Gateway and HTTPRoutes created successfully"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
+
+    - name: Verify Gateway API setup
+      run: |
+        MASTER_INSTANCES="${{ inputs.master_instances }}"
+        FIRST_MASTER=$(echo $MASTER_INSTANCES | cut -d',' -f1)
+        
+        echo "Verifying Gateway API setup..."
+        
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "$FIRST_MASTER" \
+          --document-name "AWS-RunShellScript" \
+          --timeout-seconds 300 \
+          --parameters 'commands=[
+            "echo === Gateway Status ===",
+            "sudo k3s kubectl get gateway opensearch-gateway -n default -o yaml",
+            "echo === HTTPRoutes ===", 
+            "sudo k3s kubectl get httproute -n default",
+            "echo === NodePort Services ===",
+            "sudo k3s kubectl get svc opensearch-dashboard-nodeport opensearch-api-nodeport -n default",
+            "echo === OpenSearch Services ===",
+            "sudo k3s kubectl get svc -n opensearch",
+            "echo === Certificates ===",
+            "sudo k3s kubectl get certificate -A",
+            "echo === Traefik Gateway Controller Status ===",
+            "sudo k3s kubectl logs -n kube-system -l app.kubernetes.io/name=traefik --tail=20"
+          ]' \
+          --query 'Command.CommandId' \
+          --output text)
+        
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER"
+        
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$FIRST_MASTER" \
+          --query 'StandardOutputContent' \
+          --output text
