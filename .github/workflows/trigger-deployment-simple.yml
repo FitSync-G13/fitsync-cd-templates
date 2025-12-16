@@ -31,7 +31,7 @@ jobs:
           -H "Accept: application/vnd.github.v3+json" \
           https://api.github.com/repos/FitSync-G13/fitsync-cd/actions/workflows/update-service-deployment.yml/dispatches \
           -d '{
-            "ref": "main",
+            "ref": "master",
             "inputs": {
               "service_name": "${{ inputs.service_name }}",
               "image_tag": "${{ inputs.image_tag }}",
