@@ -1,0 +1,42 @@
+name: Trigger Deployment (Simple)
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: 'Name of the service to update'
+        required: true
+        type: string
+      image_tag:
+        description: 'New image tag to deploy'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        type: string
+    secrets:
+      DEPLOYMENT_TOKEN:
+        required: true
+
+jobs:
+  trigger-deployment:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Trigger deployment in fitsync-cd repo
+      run: |
+        curl -X POST \
+          -H "Authorization: token ${{ secrets.DEPLOYMENT_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/FitSync-G13/fitsync-cd/actions/workflows/update-service-deployment.yml/dispatches \
+          -d '{
+            "ref": "main",
+            "inputs": {
+              "service_name": "${{ inputs.service_name }}",
+              "image_tag": "${{ inputs.image_tag }}",
+              "environment": "${{ inputs.environment }}"
+            }
+          }'
+        
+        echo "✅ Triggered deployment of ${{ inputs.service_name }}:${{ inputs.image_tag }} in ${{ inputs.environment }}"
