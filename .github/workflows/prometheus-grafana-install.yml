@@ -92,9 +92,9 @@ jobs:
           --instance-ids "$FIRST_MASTER" \
           --document-name "AWS-RunShellScript" \
           --timeout-seconds 300 \
-          --parameters 'commands=[
-            "echo Creating Grafana VirtualService",
-            "sudo k3s kubectl create -f - <<EOF
+          --parameters "commands=[
+            \"echo Creating Grafana VirtualService\",
+            \"sudo k3s kubectl apply -f - <<EOF
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -102,9 +102,9 @@ metadata:
   namespace: cilium-monitoring
 spec:
   hosts:
-  - \"*\"
+  - '*'
   gateways:
-  - istio-system/'${GATEWAY_NAME}'
+  - istio-system/$GATEWAY_NAME
   http:
   - match:
     - uri:
@@ -116,9 +116,9 @@ spec:
         host: grafana.cilium-monitoring.svc.cluster.local
         port:
           number: 3000
-EOF",
-            "echo Creating Prometheus VirtualService",
-            "sudo k3s kubectl create -f - <<EOF
+EOF\",
+            \"echo Creating Prometheus VirtualService\",
+            \"sudo k3s kubectl apply -f - <<EOF
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -126,9 +126,9 @@ metadata:
   namespace: cilium-monitoring
 spec:
   hosts:
-  - \"*\"
+  - '*'
   gateways:
-  - istio-system/'${GATEWAY_NAME}'
+  - istio-system/$GATEWAY_NAME
   http:
   - match:
     - uri:
@@ -140,9 +140,9 @@ spec:
         host: prometheus.cilium-monitoring.svc.cluster.local
         port:
           number: 9090
-EOF",
-            "echo VirtualServices created"
-          ]' \
+EOF\",
+            \"echo VirtualServices created\"
+          ]" \
           --query 'Command.CommandId' \
           --output text)
         
