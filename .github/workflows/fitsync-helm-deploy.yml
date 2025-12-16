@@ -163,7 +163,7 @@ jobs:
           JWT_EXPIRY: "15m"
           JWT_REFRESH_EXPIRY: "7d"
           RATE_LIMIT_WINDOW_MS: "900000"
-          RATE_LIMIT_MAX_REQUESTS: "100"
+          RATE_LIMIT_MAX_REQUESTS: "10000"
           
         # OpenSearch logging configuration
         logging:
